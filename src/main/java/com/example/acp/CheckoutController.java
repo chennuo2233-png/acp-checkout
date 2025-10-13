@@ -88,7 +88,7 @@ public class CheckoutController {
 
     /* ---------- 4. Cancel session ---------- */
     @PostMapping("/checkout_sessions/{id}/cancel")
-    public ResponseEntity<Map<String, Object>> cancel(@PathVariable String id) {
+    public ResponseEntity<Map<String, Object>> cancel(@PathVariable("id") String id)  {
         Map<String, Object> session = store.get(id);
         if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
 
@@ -103,7 +103,7 @@ public class CheckoutController {
 
     /* ---------- 5. Get session ---------- */
     @GetMapping("/checkout_sessions/{id}")
-    public ResponseEntity<Map<String, Object>> get(@PathVariable String id) {
+    public ResponseEntity<Map<String, Object>> get(@PathVariable("id") String id) {
         Map<String, Object> session = store.get(id);
         if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         return ResponseEntity.ok(session);
