@@ -28,10 +28,10 @@ public class CheckoutController {
         return ResponseEntity.status(HttpStatus.CREATED).body(session);
     }
 
-    /* ---------- 2. Update checkout session ---------- */
-    @PostMapping("/checkout_sessions/{id}")           
+/* ---------- 2. Update session ---------- */
+    @PostMapping("/checkout_sessions/{id}")   
     public ResponseEntity<Map<String, Object>> update(
-            @PathVariable("id") String id,
+            @PathVariable("id") String id,        
             @RequestBody Map<String, Object> req) {
 
         Map<String, Object> session = store.get(id);
@@ -45,9 +45,8 @@ public class CheckoutController {
     /* ---------- 3. Complete & pay ---------- */
     @PostMapping("/checkout_sessions/{id}/complete")
     public ResponseEntity<Map<String, Object>> complete(
-            @PathVariable("id") String id,
+            @PathVariable("id") String id,       
             @RequestBody Map<String, Object> req) {
-
         Map<String, Object> session = store.get(id);
         if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
 
