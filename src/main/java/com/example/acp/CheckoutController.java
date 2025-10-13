@@ -31,7 +31,7 @@ public class CheckoutController {
     /* ---------- 2. Update checkout session ---------- */
     @PostMapping("/checkout_sessions/{id}")           
     public ResponseEntity<Map<String, Object>> update(
-            @PathVariable String id,
+            @PathVariable("id") String id,
             @RequestBody Map<String, Object> req) {
 
         Map<String, Object> session = store.get(id);
@@ -45,7 +45,7 @@ public class CheckoutController {
     /* ---------- 3. Complete & pay ---------- */
     @PostMapping("/checkout_sessions/{id}/complete")
     public ResponseEntity<Map<String, Object>> complete(
-            @PathVariable String id,
+            @PathVariable("id") String id,
             @RequestBody Map<String, Object> req) {
 
         Map<String, Object> session = store.get(id);
