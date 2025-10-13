@@ -29,7 +29,7 @@ public class CheckoutController {
     }
 
     /* ---------- 2. Update checkout session ---------- */
-    @PatchMapping("/checkout_sessions/{id}")            // ★ 改成 PATCH 更符合规范
+    @PostMapping("/checkout_sessions/{id}")           
     public ResponseEntity<Map<String, Object>> update(
             @PathVariable String id,
             @RequestBody Map<String, Object> req) {
