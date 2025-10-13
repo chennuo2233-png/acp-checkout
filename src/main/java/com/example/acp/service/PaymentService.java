@@ -1,8 +1,8 @@
 package com.example.acp.service;
 
 import com.stripe.Stripe;
-import com.stripe.param.PaymentIntentCreateParams;
 import com.stripe.model.PaymentIntent;
+import com.stripe.param.PaymentIntentCreateParams;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -15,20 +15,22 @@ public class PaymentService {
         Stripe.setAppInfo("acp-checkout-demo", "0.0.1", null);
     }
 
-    public PaymentIntent createIntent(long amount, String currency,
-                                      String delegatedPaymentToken) throws Exception {
+    /**
+     * 使用 Shared-Payment-Granted-Token 创建并确认一笔支付
+     */
+    public PaymentIntent createIntent(long amount,
+                                      String currency,
+                                      String sharedPaymentGrantedToken) throws Exception {
+
         PaymentIntentCreateParams params =
             PaymentIntentCreateParams.builder()
-                .setAmount(amount)
-                .setCurrency(currency)
-                .setPaymentMethodData(
-                    PaymentIntentCreateParams.PaymentMethodData.builder()
-                       .putExtraParam("type", "delegated_payment_token")           
-                       .putExtraParam("delegated_payment_token", delegatedPaymentToken)  
-                       .build()
-                )
-                .setCaptureMethod(PaymentIntentCreateParams.CaptureMethod.AUTOMATIC)
+                .setAmount(amount)                 // 单位：美分
+                .setCurrency(currency)             // 如 "usd"
+                // ↓ 关键：通过 extraParam 传入 shared_payment_granted_token
+                .putExtraParam("shared_payment_granted_token", sharedPaymentGrantedToken)
+                .setConfirm(true)                  // 立即扣款
                 .build();
+
         return PaymentIntent.create(params);
     }
 }
