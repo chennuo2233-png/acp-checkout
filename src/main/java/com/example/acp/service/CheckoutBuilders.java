@@ -98,7 +98,7 @@ public class CheckoutBuilders {
         // ── 规范要求：payment_provider / messages / links ────────────────
         session.put("payment_provider", Map.of(
                 "provider", "stripe",
-                "stripe_account_id", STRIPE_ACCOUNT_ID,          // ★ 必填
+                "stripe_account_id", STRIPE_ACCOUNT_ID,          
                 "supported_payment_methods", List.of("card")
         ));
 

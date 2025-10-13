@@ -23,8 +23,8 @@ public class PaymentService {
                 .setCurrency(currency)
                 .setPaymentMethodData(
                     PaymentIntentCreateParams.PaymentMethodData.builder()
-                       .setType("delegated_payment_token")
-                       .putExtraParam("delegated_payment_token", delegatedPaymentToken)
+                       .putExtraParam("type", "delegated_payment_token")           
+                       .putExtraParam("delegated_payment_token", delegatedPaymentToken)  
                        .build()
                 )
                 .setCaptureMethod(PaymentIntentCreateParams.CaptureMethod.AUTOMATIC)
