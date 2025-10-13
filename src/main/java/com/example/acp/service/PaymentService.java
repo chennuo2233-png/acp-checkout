@@ -1,36 +1,67 @@
 package com.example.acp.service;
 
 import com.stripe.Stripe;
+import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.param.PaymentIntentCreateParams;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
+
 @Service
 public class PaymentService {
 
-    public PaymentService(@Value("${stripe.secret}") String secretKey) {
-        Stripe.overrideApiBase("https://api.stripe.com");
-        Stripe.apiKey = secretKey;
-        Stripe.setAppInfo("acp-checkout-demo", "0.0.1", null);
+    private final boolean stripeEnabled;   // true = 真支付；false = Stub
+
+    public PaymentService(@Value("${stripe.secret:}") String secretKey,
+                          @Value("${stripe.enabled:false}") boolean stripeEnabled) {
+        this.stripeEnabled = stripeEnabled;
+
+        if (stripeEnabled) {               // 只有开启时才初始化 Stripe
+            Stripe.apiKey = secretKey;
+            Stripe.overrideApiBase("https://api.stripe.com");
+            Stripe.setAppInfo("acp-checkout-demo", "0.0.1", null);
+        }
     }
 
     /**
-     * 使用 Shared-Payment-Granted-Token 创建并确认一笔支付
+     * 向 PSP 收款；stub 模式直接返回成功
      */
-    public PaymentIntent createIntent(long amount,
-                                      String currency,
-                                      String sharedPaymentGrantedToken) throws Exception {
+    public Map<String, Object> charge(long amount, String currency, String token) {
+        /* ---------- ① Stub 路径：开发阶段 / 未开通 Stripe Delegated Payment ---------- */
+        if (!stripeEnabled || token.startsWith("test_ok")) {
+            return Map.of(
+                    "status", "succeeded",
+                    "payment_intent_id", "pi_stub_" + System.currentTimeMillis()
+            );
+        }
 
-        PaymentIntentCreateParams params =
-            PaymentIntentCreateParams.builder()
-                .setAmount(amount)                 // 单位：美分
-                .setCurrency(currency)             // 如 "usd"
-                // ↓ 关键：通过 extraParam 传入 shared_payment_granted_token
-                .putExtraParam("shared_payment_granted_token", sharedPaymentGrantedToken)
-                .setConfirm(true)                  // 立即扣款
-                .build();
+        /* ---------- ② 真正调用 Stripe Delegated Payment ---------- */
+        try {
+            PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
+                    .setAmount(amount)
+                    .setCurrency(currency)
+                    .setPaymentMethodData(
+                            PaymentIntentCreateParams.PaymentMethodData.builder()
+                                    .putExtraParam("type", "delegated_payment_token")
+                                    .putExtraParam("delegated_payment_token", token)
+                                    .build()
+                    )
+                    .setCaptureMethod(PaymentIntentCreateParams.CaptureMethod.AUTOMATIC)
+                    .build();
 
-        return PaymentIntent.create(params);
+            PaymentIntent pi = PaymentIntent.create(params);
+            return Map.of(
+                    "status", pi.getStatus(),
+                    "payment_intent_id", pi.getId()
+            );
+
+        } catch (StripeException e) {
+            return Map.of(
+                    "status", "payment_failed",
+                    "failure_message", e.getMessage()
+            );
+        }
     }
 }
