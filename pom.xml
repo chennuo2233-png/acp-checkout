@@ -9,11 +9,13 @@
   <name>acp-checkout</name>
   <description>ACP Checkout Demo</description>
 
+  <!-- ===== 版本属性 ===== -->
   <properties>
     <java.version>17</java.version>
     <spring.boot.version>3.3.4</spring.boot.version>
   </properties>
 
+  <!-- ===== Spring Boot BOM ===== -->
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -26,12 +28,15 @@
     </dependencies>
   </dependencyManagement>
 
+  <!-- ===== 依赖 ===== -->
   <dependencies>
+    <!-- Web / Tomcat -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
 
+    <!-- Stripe SDK -->
     <dependency>
       <groupId>com.stripe</groupId>
       <artifactId>stripe-java</artifactId>
@@ -39,9 +44,11 @@
     </dependency>
   </dependencies>
 
+  <!-- ===== 构建插件 ===== -->
   <build>
     <plugins>
 
+      <!-- Maven Compiler：打开 -parameters 供 Spring 反射参数名 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -49,9 +56,13 @@
         <configuration>
           <release>${java.version}</release>
           <encoding>UTF-8</encoding>
+          <compilerArgs>
+            <arg>-parameters</arg>
+          </compilerArgs>
         </configuration>
       </plugin>
 
+      <!-- Spring Boot 可执行 fat-jar -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
