@@ -86,6 +86,12 @@ public ResponseEntity<String> handle(@RequestBody String payload,
                 case "charge.refunded":
                     applyRefundAndPublish(payload);  
                     break;
+                case "charge.dispute.created":
+                    applyDisputeAndPublish(payload, "open");   // 争议开启
+                    break;
+                case "charge.dispute.closed":
+                    applyDisputeAndPublish(payload, "closed"); // 争议关闭
+                    break;
 
                 default:
                     // 其它类型本步先忽略（退款/争议下一步加）
@@ -203,6 +209,50 @@ private void applyRefundAndPublish(String rawPayload) {
         // 持久化并广播权威更新
         sessionStore.put(String.valueOf(session.get("id")), session);
         orderEventPublisher.publishOrderUpdated(session);
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
+
+/** 解析 charge.dispute.{created|closed}，合并争议状态并发送 order.updated */
+private void applyDisputeAndPublish(String rawPayload, String disputeStatus) {
+    try {
+        JsonNode root = mapper.readTree(rawPayload);
+        JsonNode obj  = root.path("data").path("object");   // dispute 对象
+        String disputeId = obj.path("id").asText(null);
+        String chargeId  = obj.path("charge").asText(null);
+
+        // 取回 charge -> payment_intent（需要已配置 Stripe.apiKey）
+        String paymentIntentId = null;
+        if (chargeId != null) {
+            try {
+                com.stripe.model.Charge ch = com.stripe.model.Charge.retrieve(chargeId);
+                paymentIntentId = ch.getPaymentIntent();
+            } catch (Exception e) {
+                System.err.println("[Stripe Webhook] retrieve charge failed: " + e.getMessage());
+            }
+        }
+
+        if (paymentIntentId == null) {
+            System.out.println("[Stripe Webhook] dispute event but no PI (charge=" + chargeId + ")");
+            return;
+        }
+
+        Map<String, Object> session = sessionStore.findByPaymentIntentId(paymentIntentId);
+        if (session == null) {
+            System.out.println("[Stripe Webhook] dispute " + disputeStatus + " but no session found, pi=" + paymentIntentId);
+            return;
+        }
+
+        // 合并争议状态
+        session.put("dispute_status", disputeStatus); // open / closed
+        if (disputeId != null) session.put("dispute_id", disputeId);
+        if (chargeId  != null) session.put("charge_id", chargeId);
+
+        // 持久化并发权威更新
+        sessionStore.put(String.valueOf(session.get("id")), session);
+        orderEventPublisher.publishOrderUpdated(session);
+
     } catch (Exception e) {
         e.printStackTrace();
     }
