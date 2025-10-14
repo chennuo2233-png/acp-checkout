@@ -67,7 +67,7 @@ public class CheckoutController {
 
         try {
             /* ③ 调用 PaymentService：真 Stripe 或 Stub */
-            Map<String, Object> payResult = paymentService.charge(payable, "usd", token);
+            Map<String, Object> payResult = paymentService.charge(token, payable, "usd");
             session.putAll(payResult);                              // 写入 status / payment_intent_id
 
             /* ④ 根据支付结果更新会话状态 */
