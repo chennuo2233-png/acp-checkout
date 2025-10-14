@@ -23,6 +23,7 @@ public class CheckoutController {
     @Autowired private PaymentService paymentService;
     @Autowired private OrderEventPublisher orderEventPublisher;
     @Autowired private com.example.acp.store.IdempotencyStore idempotencyStore;
+    
 
 
     /* ---------- 1. Create checkout session ---------- */
@@ -83,7 +84,7 @@ public ResponseEntity<Map<String, Object>> complete(
     Map<String, Object> session = store.get(id);
     if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
 
-    // ===== 幂等：同一 Idempotency-Key 直接返回历史响应；并发占位返回 409 =====
+    // ===== 幂等：同键命中直接返回；并发时先短暂轮询等待缓存 =====
     String key = (idemKey == null || idemKey.isBlank()) ? null : ("complete:" + id + ":" + idemKey);
     if (key != null) {
         Map<String, Object> cached = idempotencyStore.getIfReady(key);
@@ -91,55 +92,59 @@ public ResponseEntity<Map<String, Object>> complete(
 
         boolean begun = idempotencyStore.tryBegin(key);
         if (!begun) {
-            Map<String, Object> cached2 = idempotencyStore.getIfReady(key);
-            if (cached2 != null) return ResponseEntity.ok(cached2);
+            // 首个请求可能尚未 commit：轮询等待最多 1 秒，等缓存就绪再返回 200
+            for (int i = 0; i < 10; i++) {
+                Map<String, Object> c = idempotencyStore.getIfReady(key);
+                if (c != null) return ResponseEntity.ok(c);
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+            }
+            // 仍未就绪：返回 409，客户端稍后用相同键重试即可命中缓存
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(Map.of("error", "idempotency_in_progress",
                                  "message", "Please retry later with the same Idempotency-Key"));
         }
     }
 
-        /* ① 读取 delegated / stub token */
-        String token = String.valueOf(req.getOrDefault("payment_method_token", ""));
+    // ===== 业务：读取 token，计算应付金额 =====
+    String token = String.valueOf(req.getOrDefault("payment_method_token", ""));
+    @SuppressWarnings("unchecked")
+    List<Map<String, Object>> totals = (List<Map<String, Object>>) session.getOrDefault("totals", List.of());
+    long payable = totals.stream()
+            .filter(t -> "total".equals(t.get("type")))
+            .mapToLong(t -> ((Number) t.get("amount")).longValue())
+            .findFirst()
+            .orElse(0);
 
-        /* ② 计算总金额（从 totals 里找 type == total 的 amount） */
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> totals = (List<Map<String, Object>>) session.getOrDefault("totals", List.of());
-        long payable = totals.stream()
-                .filter(t -> "total".equals(t.get("type")))
-                .mapToLong(t -> ((Number) t.get("amount")).longValue())
-                .findFirst()
-                .orElse(0);
+    Map<String, Object> responseBody;
+    try {
+        // 真 Stripe 或 Stub
+        Map<String, Object> payResult = paymentService.charge(token, payable, "usd");
+        session.putAll(payResult); // 写入 status / payment_intent_id
 
-        try {
-            /* ③ 调用 PaymentService：真 Stripe 或 Stub */
-            Map<String, Object> payResult = paymentService.charge(token, payable, "usd");
-            session.putAll(payResult);                              // 写入 status / payment_intent_id
-
-            /* ④ 根据支付结果更新会话状态 */
-            if ("succeeded".equals(payResult.get("status"))) {
-                CheckoutBuilders.markCompleted(session, req);       // 置为 completed
-            } else {
-                session.put("status", "payment_failed");
-            }
+        if ("succeeded".equals(payResult.get("status"))) {
+            CheckoutBuilders.markCompleted(session, req);     // ✅ 只调用一次
+            session.put("status", "completed");
             store.put(id, session);
-
-            if ("succeeded".equals(payResult.get("status"))) {
-                CheckoutBuilders.markCompleted(session, req);       // 置为 completed
-                orderEventPublisher.publishOrderCreated(session);   // ✅ 触发权威事件
-                } else {
-                    session.put("status", "payment_failed");
-                }
-
-            return ResponseEntity.ok(session);
-
-        } catch (Exception e) {                                     // StripeException 等
-            e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", e.getMessage()));
+            orderEventPublisher.publishOrderCreated(session); // 权威事件
+        } else {
+            session.put("status", "payment_failed");
+            store.put(id, session);
         }
+
+        responseBody = session;
+
+    } catch (Exception e) {
+        e.printStackTrace();
+        responseBody = Map.of("error", e.getMessage());
+        // 失败也应被缓存为同键响应，避免重复扣款/重复下单
+        if (key != null) idempotencyStore.commit(key, responseBody);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(responseBody);
     }
 
+    // ===== 写入幂等缓存（成功或失败结果都缓存） =====
+    if (key != null) idempotencyStore.commit(key, responseBody);
+    return ResponseEntity.ok(responseBody);
+}
     /* ---------- 4. Cancel session ---------- */
     @PostMapping("/checkout_sessions/{id}/cancel")
     public ResponseEntity<Map<String, Object>> cancel(@PathVariable("id") String id)  {
