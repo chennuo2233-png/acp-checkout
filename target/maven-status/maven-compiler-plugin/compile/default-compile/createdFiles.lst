@@ -1,4 +1,5 @@
 com\example\acp\feed\WixProduct$MediaInfo$MediaItem.class
+com\example\acp\store\IdempotencyStore.class
 com\example\acp\Application.class
 com\example\acp\feed\ProductFeedController.class
 com\example\acp\feed\WixProduct$MediaInfo$MainMedia.class
@@ -14,5 +15,6 @@ com\example\acp\feed\ProductFeedService.class
 com\example\acp\feed\WixProduct$MediaInfo.class
 com\example\acp\feed\ProductsResponse.class
 com\example\acp\feed\WixClient.class
+com\example\acp\store\IdempotencyStore$Entry.class
 com\example\acp\service\OrderEventPublisher.class
 com\example\acp\service\CheckoutBuilders.class

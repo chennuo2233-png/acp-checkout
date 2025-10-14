@@ -22,6 +22,8 @@ public class CheckoutController {
     @Autowired private SessionStore store;
     @Autowired private PaymentService paymentService;
     @Autowired private OrderEventPublisher orderEventPublisher;
+    @Autowired private com.example.acp.store.IdempotencyStore idempotencyStore;
+
 
     /* ---------- 1. Create checkout session ---------- */
     @PostMapping("/checkout_sessions")
@@ -35,20 +37,41 @@ public class CheckoutController {
 // Update: 返回 200，更新 items/地址/配送选项
     @PostMapping("/checkout_sessions/{id}")
     public ResponseEntity<Map<String, Object>> update(
-            @PathVariable("id") String id,
-            @RequestBody Map<String, Object> req) {
+        @PathVariable("id") String id,
+        @RequestBody Map<String, Object> req,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idemKey) {
 
-        System.out.println("收到更新请求: " + req);
+    Map<String, Object> session = store.get(id);
+    if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
 
-        Map<String, Object> session = store.get(id);
-        if (session == null) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+    // ===== 幂等：若已有完成的同键响应，直接返回；否则占位防并发重复 =====
+    String key = (idemKey == null || idemKey.isBlank())
+            ? null
+            : "update:" + id + ":" + idemKey;
+
+    if (key != null) {
+        Map<String, Object> cached = idempotencyStore.getIfReady(key);
+        if (cached != null) return ResponseEntity.ok(cached);
+
+        boolean begun = idempotencyStore.tryBegin(key);
+        if (!begun) {
+            Map<String, Object> cached2 = idempotencyStore.getIfReady(key);
+            if (cached2 != null) return ResponseEntity.ok(cached2);
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of("error", "idempotency_in_progress",
+                                 "message", "Please retry later with the same Idempotency-Key"));
         }
-        CheckoutBuilders.applyUpdates(session, req);
-        store.put(id, session);
-        orderEventPublisher.publishOrderUpdated(session);
-        return ResponseEntity.ok(session);
     }
+
+    // ===== 业务：按本次请求 + 现有会话重建完整富状态 =====
+    CheckoutBuilders.applyUpdates(session, req);            // 会保留旧 items 的修复版
+    store.put(id, session);
+    orderEventPublisher.publishOrderUpdated(session);       // 更新事件 webhook（你已有） :contentReference[oaicite:2]{index=2}
+
+    if (key != null) idempotencyStore.commit(key, session);
+    return ResponseEntity.ok(session);
+}
+
 
     /* ---------- 3. Complete & pay ---------- */
     @PostMapping("/checkout_sessions/{id}/complete")
