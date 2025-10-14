@@ -111,21 +111,48 @@ public class CheckoutBuilders {
     }
 
     /** 合并更新请求并重算 totals/line_items */
-    public static void applyUpdates(Map<String, Object> session, Map<String, Object> req) {
+public static void applyUpdates(Map<String, Object> session, Map<String, Object> req) {
 
-        Map<String, Object> merged = new HashMap<>(session);
+    Map<String, Object> merged = new HashMap<>(session);
 
-        if (req.containsKey("fulfillment_address"))
-            merged.put("fulfillment_address", req.get("fulfillment_address"));
-        if (req.containsKey("fulfillment_option_id"))
-            merged.put("fulfillment_option_id", req.get("fulfillment_option_id"));
-        if (req.containsKey("items") && req.get("items") instanceof List)
-            merged.put("items", req.get("items"));
+    // 合并本次更新的地址/配送选项
+    if (req.containsKey("fulfillment_address"))
+        merged.put("fulfillment_address", req.get("fulfillment_address"));
+    if (req.containsKey("fulfillment_option_id"))
+        merged.put("fulfillment_option_id", req.get("fulfillment_option_id"));
 
-        Map<String, Object> rebuilt = buildInitialSession((String) session.get("id"), merged);
-        session.clear();
-        session.putAll(rebuilt);
+    // 关键修复：
+    // 若这次请求显式携带了 items（允许空数组表示清空购物车），就以它为准；
+    // 否则从现有 line_items 反推回最小 items（id + quantity），以“保留购物车”满足规范的“完整富状态”要求。
+    if (req.containsKey("items") && req.get("items") instanceof List) {
+        merged.put("items", req.get("items"));
+    } else {
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> prevLines =
+                (List<Map<String, Object>>) session.getOrDefault("line_items", List.of());
+
+        List<Map<String, Object>> derivedItems = new ArrayList<>();
+        for (Map<String, Object> li : prevLines) {
+            Object itemObj = li.get("item");
+            if (itemObj instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> it = (Map<String, Object>) itemObj;
+                Map<String, Object> minimal = new HashMap<>();
+                minimal.put("id", it.get("id"));
+                Object qty = it.get("quantity");
+                minimal.put("quantity", (qty instanceof Number) ? ((Number) qty).intValue() : 1);
+                derivedItems.add(minimal);
+            }
+        }
+        merged.put("items", derivedItems);
     }
+
+    // 用合并后的请求重建完整会话（行项/税费/合计都会被重算）
+    Map<String, Object> rebuilt = buildInitialSession((String) session.get("id"), merged);
+    session.clear();
+    session.putAll(rebuilt);
+}
+
 
     /** 把会话状态置为 completed，并生成订单对象 */
     public static void markCompleted(Map<String, Object> session, Map<String, Object> req) {
