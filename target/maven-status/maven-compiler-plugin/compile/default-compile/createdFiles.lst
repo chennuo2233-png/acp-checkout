@@ -1,3 +1,4 @@
+com\example\acp\webhook\StripeWebhookController.class
 com\example\acp\feed\WixProduct$MediaInfo$MediaItem.class
 com\example\acp\store\IdempotencyStore.class
 com\example\acp\Application.class
