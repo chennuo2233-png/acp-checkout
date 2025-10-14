@@ -12,6 +12,7 @@ com\example\acp\feed\WixProduct$StockInfo.class
 com\example\acp\feed\WixProduct$MediaInfo$Image.class
 com\example\acp\feed\WixProduct.class
 com\example\acp\service\PaymentService.class
+com\example\acp\webhook\DebugController.class
 com\example\acp\feed\ProductFeedService.class
 com\example\acp\feed\WixProduct$MediaInfo.class
 com\example\acp\feed\ProductsResponse.class

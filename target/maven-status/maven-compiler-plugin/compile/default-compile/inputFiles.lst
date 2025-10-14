@@ -10,5 +10,6 @@ C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductFeedContr
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\service\OrderEventPublisher.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\store\IdempotencyStore.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\WixProduct.java
+C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\webhook\DebugController.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\webhook\StripeWebhookController.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\WixClient.java
