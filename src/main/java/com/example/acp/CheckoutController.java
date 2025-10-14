@@ -3,6 +3,9 @@ package com.example.acp;
 import com.example.acp.service.CheckoutBuilders;
 import com.example.acp.service.PaymentService;
 import com.example.acp.store.SessionStore;
+
+import com.example.acp.service.OrderEventPublisher;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
@@ -17,7 +20,8 @@ import java.util.*;
 public class CheckoutController {
 
     @Autowired private SessionStore store;
-    @Autowired private PaymentService paymentService;   // 新增 Stub / Stripe 二合一支付服务
+    @Autowired private PaymentService paymentService;
+    @Autowired private OrderEventPublisher orderEventPublisher;
 
     /* ---------- 1. Create checkout session ---------- */
     @PostMapping("/checkout_sessions")
@@ -78,7 +82,12 @@ public class CheckoutController {
             }
             store.put(id, session);
 
-            /* ⑤ TODO: 触发 order.created / payment_succeeded webhook */
+            if ("succeeded".equals(payResult.get("status"))) {
+                CheckoutBuilders.markCompleted(session, req);       // 置为 completed
+                orderEventPublisher.publishOrderCreated(session);   // ✅ 触发权威事件
+                } else {
+                    session.put("status", "payment_failed");
+                }
 
             return ResponseEntity.ok(session);
 

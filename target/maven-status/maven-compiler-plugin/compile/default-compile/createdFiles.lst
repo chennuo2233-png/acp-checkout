@@ -14,4 +14,5 @@ com\example\acp\feed\ProductFeedService.class
 com\example\acp\feed\WixProduct$MediaInfo.class
 com\example\acp\feed\ProductsResponse.class
 com\example\acp\feed\WixClient.class
+com\example\acp\service\OrderEventPublisher.class
 com\example\acp\service\CheckoutBuilders.class

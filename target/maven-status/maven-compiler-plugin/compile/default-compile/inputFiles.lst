@@ -2,6 +2,7 @@ C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductsResponse
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\service\CheckoutBuilders.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\service\ProductService.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductFeedController.java
+C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\service\OrderEventPublisher.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\Application.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\WixProduct.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductFeedService.java
