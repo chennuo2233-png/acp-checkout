@@ -74,12 +74,30 @@ public class CheckoutController {
 
 
     /* ---------- 3. Complete & pay ---------- */
-    @PostMapping("/checkout_sessions/{id}/complete")
-    public ResponseEntity<Map<String, Object>> complete(
-            @PathVariable("id") String id,       
-            @RequestBody Map<String, Object> req) {
-        Map<String, Object> session = store.get(id);
-        if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+    @PostMapping("/api/checkout_sessions/{id}/complete")
+public ResponseEntity<Map<String, Object>> complete(
+        @PathVariable("id") String id,
+        @RequestBody Map<String, Object> req,
+        @RequestHeader(value = "Idempotency-Key", required = false) String idemKey) {
+
+    Map<String, Object> session = store.get(id);
+    if (session == null) return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+
+    // ===== 幂等：同一 Idempotency-Key 直接返回历史响应；并发占位返回 409 =====
+    String key = (idemKey == null || idemKey.isBlank()) ? null : ("complete:" + id + ":" + idemKey);
+    if (key != null) {
+        Map<String, Object> cached = idempotencyStore.getIfReady(key);
+        if (cached != null) return ResponseEntity.ok(cached);
+
+        boolean begun = idempotencyStore.tryBegin(key);
+        if (!begun) {
+            Map<String, Object> cached2 = idempotencyStore.getIfReady(key);
+            if (cached2 != null) return ResponseEntity.ok(cached2);
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of("error", "idempotency_in_progress",
+                                 "message", "Please retry later with the same Idempotency-Key"));
+        }
+    }
 
         /* ① 读取 delegated / stub token */
         String token = String.valueOf(req.getOrDefault("payment_method_token", ""));
