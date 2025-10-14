@@ -74,7 +74,7 @@ public class CheckoutController {
 
 
     /* ---------- 3. Complete & pay ---------- */
-    @PostMapping("/api/checkout_sessions/{id}/complete")
+    @PostMapping("/checkout_sessions/{id}/complete")
 public ResponseEntity<Map<String, Object>> complete(
         @PathVariable("id") String id,
         @RequestBody Map<String, Object> req,
