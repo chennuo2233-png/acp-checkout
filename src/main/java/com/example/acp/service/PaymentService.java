@@ -40,16 +40,11 @@ public class PaymentService {
         /* ---------- ② 真正调用 Stripe Delegated Payment ---------- */
         try {
             PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
-                    .setAmount(amount)
-                    .setCurrency(currency)
-                    .setPaymentMethodData(
-                            PaymentIntentCreateParams.PaymentMethodData.builder()
-                                    .putExtraParam("type", "delegated_payment_token")
-                                    .putExtraParam("delegated_payment_token", token)
-                                    .build()
-                    )
-                    .setCaptureMethod(PaymentIntentCreateParams.CaptureMethod.AUTOMATIC)
-                    .build();
+                     .setAmount(amount)
+                     .setCurrency(currency)
+                     .putExtraParam("shared_payment_granted_token", token) // ✅ 使用 SPT
+                     .setConfirm(true)                                     // ✅ 直接确认
+                     .build();
 
             PaymentIntent pi = PaymentIntent.create(params);
             return Map.of(
