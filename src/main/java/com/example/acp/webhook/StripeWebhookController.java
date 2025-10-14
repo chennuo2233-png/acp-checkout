@@ -83,6 +83,10 @@ public ResponseEntity<String> handle(@RequestBody String payload,
                     String reason = extractFailureMessage(payload);
                     applyPiStatusAndPublish(piOrObjId, "failed", reason, payload);
                     break;
+                case "charge.refunded":
+                    applyRefundAndPublish(payload);  
+                    break;
+
                 default:
                     // 其它类型本步先忽略（退款/争议下一步加）
             }
@@ -166,6 +170,42 @@ private String extractFailureMessage(String rawPayload) {
         }
     } catch (Exception ignored) {}
     return "payment_failed";
+}
+
+/** 解析 charge.refunded，把退款状态/金额合并进会话，并发送 order.updated */
+private void applyRefundAndPublish(String rawPayload) {
+    try {
+        JsonNode root = mapper.readTree(rawPayload);
+        JsonNode obj  = root.path("data").path("object");  // 这是 charge 对象
+        String chargeId = obj.path("id").asText(null);
+        String paymentIntentId = obj.path("payment_intent").asText(null);
+
+        long amount      = obj.path("amount").asLong(0);             // 原始扣款金额（最小货币单位）
+        long refundedAmt = obj.path("amount_refunded").asLong(0);    // 已退款金额
+        boolean refunded = obj.path("refunded").asBoolean(false);    // 是否全部退款
+
+        String refundStatus;
+        if (refundedAmt <= 0)       refundStatus = "none";
+        else if (!refunded || (refundedAmt < amount)) refundStatus = "partial";
+        else                         refundStatus = "refunded";
+
+        // 用 PI 反查会话（charge.refunded 事件里通常带有 payment_intent）
+        Map<String, Object> session = sessionStore.findByPaymentIntentId(paymentIntentId);
+        if (session == null) {
+            System.out.println("[Stripe Webhook] charge.refunded but no session found, pi=" + paymentIntentId + " ch=" + chargeId);
+            return; // 找不到就跳过（可能是和你无关的测试事件）
+        }
+
+        session.put("refund_status", refundStatus);
+        session.put("refund_amount", refundedAmt);
+        if (chargeId != null) session.put("charge_id", chargeId);
+
+        // 持久化并广播权威更新
+        sessionStore.put(String.valueOf(session.get("id")), session);
+        orderEventPublisher.publishOrderUpdated(session);
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
 }
 
 
