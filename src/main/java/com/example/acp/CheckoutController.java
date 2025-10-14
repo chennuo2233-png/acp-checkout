@@ -28,23 +28,22 @@ public class CheckoutController {
         return ResponseEntity.status(HttpStatus.CREATED).body(session);
     }
 
-/* ---------- 2. Update session ---------- */
+// Update: 返回 200，更新 items/地址/配送选项
     @PostMapping("/checkout_sessions/{id}")
-public ResponseEntity<Map<String,Object>> update(
-  @PathVariable String id,
-  @RequestBody Map<String,Object> req) {
-  try {
-    Map<String,Object> session = store.get(id);
-    if (session == null) return ResponseEntity.status(404).build();
-    CheckoutBuilders.applyUpdates(session, req);
-    store.put(id, session);
-    return ResponseEntity.ok(session);
-  } catch (Exception e) {
-    e.printStackTrace();  // ← 重点：把完整异常打印到日志
-    return ResponseEntity.status(500)
-      .body(Map.of("error", e.getClass().getName()+": "+e.getMessage()));
-  }
-}
+    public ResponseEntity<Map<String, Object>> update(
+            @PathVariable("id") String id,
+            @RequestBody Map<String, Object> req) {
+
+        System.out.println("收到更新请求: " + req);
+
+        Map<String, Object> session = store.get(id);
+        if (session == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        CheckoutBuilders.applyUpdates(session, req);
+        store.put(id, session);
+        return ResponseEntity.ok(session);
+    }
 
     /* ---------- 3. Complete & pay ---------- */
     @PostMapping("/checkout_sessions/{id}/complete")
