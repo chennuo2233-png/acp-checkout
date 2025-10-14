@@ -46,6 +46,7 @@ public class CheckoutController {
         }
         CheckoutBuilders.applyUpdates(session, req);
         store.put(id, session);
+        orderEventPublisher.publishOrderUpdated(session);
         return ResponseEntity.ok(session);
     }
 
