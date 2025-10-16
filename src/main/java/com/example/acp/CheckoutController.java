@@ -30,6 +30,8 @@ public class CheckoutController {
     public ResponseEntity<Map<String, Object>> create(@RequestBody Map<String, Object> req) {
         // 先补齐 items 的真实单价与币种（从 feed 查）
         enrichItemsWithPrice(req);
+        System.out.println("DEBUG items after enrich: " + req.get("items"));
+
 
         String sessionId = "cs_" + UUID.randomUUID();
         Map<String, Object> session = CheckoutBuilders.buildInitialSession(sessionId, req);
