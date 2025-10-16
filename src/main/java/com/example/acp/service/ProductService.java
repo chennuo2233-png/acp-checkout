@@ -3,9 +3,7 @@ package com.example.acp.service;
 import com.example.acp.feed.ProductFeedService;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 @Service
 public class ProductService {
@@ -18,12 +16,11 @@ public class ProductService {
 
     /** 通过商品 id 查找单价（分）+ 币种 */
     public Optional<Price> findPriceById(String id) {
-        // feedResponse 就是 List<Map<String,Object>>
         Object resp = feedService.getFeedResponse();
-        if (!(resp instanceof List)) return Optional.empty();
+        if (resp == null) return Optional.empty();
 
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> items = (List<Map<String, Object>>) resp;
+        List<Map<String, Object>> items = extractItemList(resp);
+        if (items.isEmpty()) return Optional.empty();
 
         return items.stream()
                 .filter(it -> id.equals(String.valueOf(it.get("id"))))
@@ -31,9 +28,22 @@ public class ProductService {
                 .flatMap(this::mapToPrice);
     }
 
-    /** 把 item Map 映射成 Price 对象 */
+    /** 兼容多种返回结构：List 本身 / Map→items / Map→products */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractItemList(Object resp) {
+        if (resp instanceof List) return (List<Map<String, Object>>) resp;
+
+        if (resp instanceof Map) {
+            Map<String, Object> m = (Map<String, Object>) resp;
+            Object items = m.getOrDefault("items", m.get("products"));
+            if (items instanceof List) return (List<Map<String, Object>>) items;
+        }
+        return Collections.emptyList();
+    }
+
+    /** 把 item Map 映射成 Price */
+    @SuppressWarnings("unchecked")
     private Optional<Price> mapToPrice(Map<String, Object> item) {
-        @SuppressWarnings("unchecked")
         Map<String, Object> priceObj = (Map<String, Object>) item.get("price");
         if (priceObj == null) return Optional.empty();
 
