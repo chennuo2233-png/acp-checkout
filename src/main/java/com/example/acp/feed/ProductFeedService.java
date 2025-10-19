@@ -1,18 +1,49 @@
 package com.example.acp.feed;
 
-import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
+/**
+ * 将 Wix 原始商品映射为 OpenAI Product Feed Spec。
+ * - 尽可能保留 Wix 原始字段
+ * - 补齐规范要求的必填与强推荐字段
+ * - 使用环境变量配置商家信息/政策/配送/默认值
+ */
 @Service
 public class ProductFeedService {
-    // 缓存最新 feed 数据
+
+    // ==== 商家/政策/配送/默认值（全部可用 Railway Variables 覆盖） ====
+    private static final String SELLER_NAME      = getenv("SELLER_NAME", "Your Store");
+    private static final String SELLER_URL       = getenv("SELLER_URL", "https://chennuo2233.wixsite.com/albertselfsaling");
+    private static final String PRIVACY_URL      = getenv("PRIVACY_URL", "");
+    private static final String TOS_URL          = getenv("TOS_URL", "");
+    private static final String RETURNS_URL      = getenv("RETURNS_URL", "");
+    private static final int    RETURN_WINDOW    = parseInt(getenv("RETURN_WINDOW_DAYS", "30"), 30);
+
+    // 形如：US:All:Standard:10.00 USD|US:All:Express:18.00 USD
+    private static final String SHIPPING_LINES   = getenv("SHIPPING_LINES", "US:All:Standard:10.00 USD");
+
+    // 缺省品牌/材质/重量；重量需“正数+单位”，规范要求正数，这里给出合理兜底
+    private static final String BRAND_DEFAULT    = getenv("BRAND_NAME", SELLER_NAME);
+    private static final String MATERIAL_DEFAULT = getenv("MATERIAL_DEFAULT", "Mixed");
+    private static final String WEIGHT_DEFAULT   = getenv("DEFAULT_WEIGHT", "0.2 kg");
+
+    // 库存兜底数（当 Wix 不跟踪库存或缺少数量时）
+    private static final int    DEFAULT_INVENTORY = parseInt(getenv("DEFAULT_INVENTORY", "999"), 999);
+
+    // 当库存状态为 PREORDER 且无具体可用日期时，向后推几天（规范建议 preorder 提供 availability_date）
+    private static final int    PREORDER_OFFSET_DAYS = parseInt(getenv("PREORDER_AVAIL_DAYS", "7"), 7);
+
+    // ==== 缓存最新 feed 数据 ====
     private final AtomicReference<List<Map<String, Object>>> cached =
-            new AtomicReference<>(new ArrayList<>());
-    private volatile String lastGeneratedAt = OffsetDateTime.now().toString();
+            new AtomicReference<>(List.of());
+    private volatile String lastGeneratedAt = OffsetDateTime.now(ZoneOffset.UTC).toString();
 
     // 注入真实的 WixClient（带 @Component 注解）
     private final WixClient wixClient;
@@ -21,9 +52,7 @@ public class ProductFeedService {
         this.wixClient = wixClient;
     }
 
-    /**
-     * 每 15 分钟刷新一次产品 feed，符合 OpenAI 要求的刷新频率。
-     */
+    /** 每 15 分钟刷新一次产品 feed，符合 OpenAI 的刷新建议。 */
     @Scheduled(initialDelay = 0, fixedRate = 15 * 60 * 1000)
     public void refreshFeed() {
         try {
@@ -31,126 +60,254 @@ public class ProductFeedService {
             List<Map<String, Object>> mapped = new ArrayList<>();
 
             for (WixProduct p : wixProducts) {
-                Map<String, Object> item = new HashMap<>();
+                Map<String, Object> item = new LinkedHashMap<>();
 
-                // 1. 基本数据（Required）
-                String id = (p.getSku() != null && !p.getSku().isEmpty())
-                            ? p.getSku() : p.getId();
-                item.put("id", safeId(id));                                          // id
-                item.put("title", safeTitle(p.getName()));                            // title
-                item.put("description", stripHtml(p.getDescription()));               // description
-                String link = p.getProductPageUrl().getBase()
-                              + p.getProductPageUrl().getPath();
-                item.put("link", ensureHttps(link));                                  // link
+                // ===== 1) OpenAI Flags（Required）=====
+                item.put("enable_search", "true");   // lower-case string
+                item.put("enable_checkout", "true"); // enable_checkout 要求 enable_search=true
 
-                // 2. 媒体（Required）
-                item.put("image_link",
-                         ensureHttps(p.getMedia().getMainMedia().getImage().getUrl())); // image_link
+                // ===== 2) Basic Product Data（Required）=====
+                String id = (nonEmpty(p.getSku()) ? p.getSku() : p.getId());
+                item.put("id", safeId(id));                                         // Merchant product ID
+                item.put("title", safeTitle(p.getName()));                           // Title（<=150）
+                item.put("description", stripHtml(p.getDescription()));              // Plain text（<=5000）
+                String detailUrl = ensureHttps(buildProductUrl(p));
+                item.put("link", detailUrl);                                        // Product detail URL
 
-                // 3. Item Information（Required）
-                item.put("product_category", p.getProductType());                    // product_category
-                item.put("brand", "Your Store");                                     // brand
-                item.put("material", "N/A");                                         // material
-                item.put("weight", p.getWeight() + " kg");                           // weight
-
-                // 4. 价格与促销
-                Map<String, Object> price = new HashMap<>();
-                price.put("amount", p.getPriceData().getPrice());                    // price.amount
-                price.put("currency", p.getPriceData().getCurrency());               // price.currency
-                item.put("price", price);                                            // price
-
-                if (p.getPriceData().getDiscountedPrice() 
-                    < p.getPriceData().getPrice()) {
-                    Map<String, Object> sale = new HashMap<>();
-                    sale.put("amount", p.getPriceData().getDiscountedPrice());
-                    sale.put("currency", p.getPriceData().getCurrency());
-                    item.put("sale_price", sale);                                    // sale_price
-                    item.put("sale_price_effective_date",
-                             "2025-12-01/2025-12-15");                             // sale_price_effective_date
+                // gtin（Recommended）/ mpn（gtin 缺失时 Required）
+                // Wix 常无 GTIN/UPC/ISBN，使用 SKU 作为 mpn 的合理兜底
+                if (nonEmpty(p.getSku())) {
+                    item.put("mpn", p.getSku());
                 }
 
-                // 5. 库存与可售性（Required）
-                String availability = mapAvailability(
-                                         p.getStock().getInventoryStatus());
-                item.put("availability", availability);                             // availability
-                int qty = p.getStock().isTrackInventory()
-                          ? (p.getStock().isInStock() ? 999 : 0)
-                          : 999;
-                item.put("inventory_quantity", qty);                                // inventory_quantity
+                // ===== 3) Item Information（强推荐/部分 Required）=====
+                item.put("condition", "new");                                        // 若非全新品，请按实际填 refurbished/used
+                item.put("brand", BRAND_DEFAULT);
+                item.put("material", MATERIAL_DEFAULT);
+                item.put("product_category", mapCategory(p));                         // e.g. Apparel & Accessories > Eyewear
+                String weight = formatWeight(p.getWeight());
+                item.put("weight", (weight != null ? weight : WEIGHT_DEFAULT));
 
-                // 6. 商家信息与政策（Required；enable_checkout=true 时额外必填）
-                item.put("seller_name", "Your Store");                              // seller_name
-                item.put("seller_url", p.getProductPageUrl().getBase());            // seller_url
-                item.put("return_policy", "https://yourshop.com/returns");         // return_policy
-                item.put("return_window", 30);                                     // return_window
-                item.put("seller_privacy_policy",
-                         "https://yourshop.com/legal/privacy");                  // seller_privacy_policy
-                item.put("seller_tos",
-                         "https://yourshop.com/legal/terms");                    // seller_tos
+                // ===== 4) Media（Required/Optional）=====
+                String mainImage = extractMainImage(p);
+                if (nonEmpty(mainImage)) {
+                    item.put("image_link", mainImage);                                // 主图
+                }
+                List<String> extraImages = extractAdditionalImages(p, mainImage);
+                if (!extraImages.isEmpty()) {
+                    item.put("additional_image_link", extraImages);                   // 额外图片（URL 数组）
+                }
 
-                // 7. Flags（Required）
-                item.put("enable_search", "true");                                  // enable_search
-                item.put("enable_checkout", "true");                                // enable_checkout
+                // ===== 5) Price & Promotions（Required + Optional）=====
+                Map<String, Object> price = new LinkedHashMap<>();
+                if (p.getPriceData() != null) {
+                    price.put("amount", p.getPriceData().getPrice());                     // 例如 7.5
+                    price.put("currency", p.getPriceData().getCurrency());                // 例如 USD
+                }
+                item.put("price", price);
 
-                // 8. 配送（shipping）：示例条目，若有多条可用 List<String>
-                item.put("shipping", List.of("CN:All:Standard:5.00 USD"));          // shipping
+                if (p.getPriceData() != null
+                        && p.getPriceData().getDiscountedPrice() != null
+                        && p.getPriceData().getDiscountedPrice() < p.getPriceData().getPrice()) {
+                    Map<String, Object> sale = new LinkedHashMap<>();
+                    sale.put("amount", p.getPriceData().getDiscountedPrice());
+                    sale.put("currency", p.getPriceData().getCurrency());
+                    item.put("sale_price", sale);
+
+                    // 可选：没有真实活动窗口时可以省略
+                    String start = OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                    String end   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(7).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                    item.put("sale_price_effective_date", start + "/" + end);
+                }
+
+                // ===== 6) Availability & Inventory（Required）=====
+                String availability = mapAvailability(p.getStock() != null ? p.getStock().getInventoryStatus() : null);
+                item.put("availability", availability);                               // in_stock / out_of_stock / preorder
+
+                if ("preorder".equals(availability)) {
+                    String availDate = OffsetDateTime.now(ZoneOffset.UTC)
+                            .plusDays(PREORDER_OFFSET_DAYS)
+                            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                    item.put("availability_date", availDate);
+                }
+
+                int qty = DEFAULT_INVENTORY;
+                if (p.getStock() != null) {
+                    if (p.getStock().isTrackInventory()) {
+                        qty = p.getStock().isInStock() ? DEFAULT_INVENTORY : 0;      // 没有具体数量 API，用兜底
+                    } else {
+                        qty = DEFAULT_INVENTORY;
+                    }
+                }
+                item.put("inventory_quantity", Math.max(0, qty));
+
+                // ===== 7) Variants（当存在变体时才需要 item_group_id）=====
+                // 未来若 manageVariants=true，请在此补充 item_group_id / color / size 等
+
+                // ===== 8) Fulfillment（Required where applicable）=====
+                item.put("shipping", parseShippingLines(SHIPPING_LINES));
+
+                // ===== 9) Merchant Info（Required / 当启用结账时必填）=====
+                item.put("seller_name", SELLER_NAME);
+                item.put("seller_url", ensureHttps(SELLER_URL));
+                if (nonEmpty(RETURNS_URL)) item.put("return_policy", ensureHttps(RETURNS_URL));
+                item.put("return_window", RETURN_WINDOW);
+                if (nonEmpty(PRIVACY_URL)) item.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
+                if (nonEmpty(TOS_URL))     item.put("seller_tos", ensureHttps(TOS_URL));
+
+                // ===== 10) 推荐的唯一报价 ID（可帮助去重/对账，非必填）=====
+                String offerId = item.get("id") + "-" +
+                        (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
+                        (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
+                item.put("offer_id", offerId);
 
                 mapped.add(item);
             }
 
-            // 更新缓存
             cached.set(Collections.unmodifiableList(mapped));
-            lastGeneratedAt = OffsetDateTime.now().toString();
+            lastGeneratedAt = OffsetDateTime.now(ZoneOffset.UTC).toString();
             System.out.println("Product feed refreshed: " + mapped.size());
         } catch (Exception e) {
-            // 生产环境请加重试与告警
             e.printStackTrace();
         }
     }
 
     /**
      * Controller 调用该方法返回 JSON
+     * 返回结构：
+     * {
+     *   "generated_at": "...",
+     *   "products": [ { ...feed items... } ]
+     * }
      */
     public Map<String, Object> getFeedResponse() {
-        Map<String, Object> resp = new HashMap<>();
+        Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("products", cached.get());
         resp.put("generated_at", lastGeneratedAt);
         return resp;
     }
 
-    // ======= 辅助方法 =======
+    // ============ 辅助方法 ============
+
+    private static String getenv(String k, String def) {
+        String v = System.getenv(k);
+        return (v == null || v.isBlank()) ? def : v.trim();
+    }
+
+    private static int parseInt(String s, int def) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
+    }
+
+    private boolean nonEmpty(String s) {
+        return s != null && !s.trim().isEmpty();
+    }
+
     private String stripHtml(String html) {
         if (html == null) return "";
-        return html.replaceAll("<[^>]*>", "")
-                   .replaceAll("&nbsp;", " ")
-                   .trim();
+        String text = html.replaceAll("(?is)<script.*?>.*?</script>", " ")
+                          .replaceAll("(?is)<style.*?>.*?</style>", " ")
+                          .replaceAll("<[^>]*>", " ")
+                          .replace("&nbsp;", " ")
+                          .trim();
+        return text.length() > 5000 ? text.substring(0, 5000) : text;
     }
 
     private String ensureHttps(String url) {
         if (url == null) return "";
-        return url.startsWith("http://")
-               ? url.replaceFirst("http://", "https://")
-               : url;
-    }
-
-    private String mapAvailability(String status) {
-        if (status == null) return "out_of_stock";
-        switch (status.toUpperCase(Locale.ROOT)) {
-            case "IN_STOCK": return "in_stock";
-            case "OUT_OF_STOCK": return "out_of_stock";
-            case "PREORDER": return "preorder";
-            default: return "out_of_stock";
-        }
+        String u = url.trim();
+        if (u.startsWith("http://")) return u.replaceFirst("http://", "https://");
+        return u;
     }
 
     private String safeId(String id) {
         if (id == null) return UUID.randomUUID().toString();
-        return id.length() > 100 ? id.substring(0, 100) : id;
+        String v = id.trim();
+        return v.length() > 100 ? v.substring(0, 100) : v;
     }
 
     private String safeTitle(String title) {
         if (title == null || title.trim().isEmpty()) return "Untitled";
         String t = title.trim();
         return t.length() > 150 ? t.substring(0, 150) : t;
+    }
+
+    private String mapAvailability(String status) {
+        if (status == null) return "out_of_stock";
+        switch (status.toUpperCase(Locale.ROOT)) {
+            case "IN_STOCK":      return "in_stock";
+            case "OUT_OF_STOCK":  return "out_of_stock";
+            case "PREORDER":      return "preorder";
+            default:              return "out_of_stock";
+        }
+    }
+
+    private String formatWeight(Double w) {
+        if (w == null) return null;
+        if (w > 0) {
+            String v = (Math.round(w * 1000d) / 1000d) + " kg";
+            return v.replaceAll("\\.0+ kg$", " kg");
+        }
+        return null;
+    }
+
+    /** 安全拼接商品详情页 URL（避免 NPE） */
+    private String buildProductUrl(WixProduct p) {
+        if (p == null || p.getProductPageUrl() == null) return "";
+        String base = Optional.ofNullable(p.getProductPageUrl().getBase()).orElse("");
+        String path = Optional.ofNullable(p.getProductPageUrl().getPath()).orElse("");
+        return (base + path);
+    }
+
+    /** 提取主图（带空值保护） */
+    private String extractMainImage(WixProduct p) {
+        try {
+            if (p.getMedia() != null
+                    && p.getMedia().getMainMedia() != null
+                    && p.getMedia().getMainMedia().getImage() != null) {
+                return ensureHttps(p.getMedia().getMainMedia().getImage().getUrl());
+            }
+        } catch (Exception ignore) {}
+        return "";
+    }
+
+    /** 额外图片列表（修正类型名：WixProduct.MediaInfo.MediaItem） */
+    private List<String> extractAdditionalImages(WixProduct p, String main) {
+        List<String> extras = new ArrayList<>();
+        try {
+            WixProduct.MediaInfo media = p.getMedia();
+            if (media != null && media.getItems() != null) {
+                for (WixProduct.MediaInfo.MediaItem mi : media.getItems()) {
+                    String url = (mi != null && mi.getImage() != null) ? ensureHttps(mi.getImage().getUrl()) : null;
+                    if (nonEmpty(url) && !url.equals(main)) extras.add(url);
+                }
+            }
+        } catch (Exception ignore) {}
+        return extras;
+    }
+
+    private List<String> parseShippingLines(String lines) {
+        if (lines == null || lines.isBlank()) return List.of();
+        String[] parts = lines.split("\\|");
+        List<String> list = new ArrayList<>();
+        for (String p : parts) {
+            String s = p.trim();
+            if (!s.isEmpty()) list.add(s);
+        }
+        return list;
+    }
+
+    /** 依据标题/Slug 做一个极简类目映射；实际项目可换为你的类目表 */
+    private String mapCategory(WixProduct p) {
+        String name = Optional.ofNullable(p.getName()).orElse("");
+        String slug = Optional.ofNullable(p.getSlug()).orElse("");
+        String text = (name + " " + slug).toLowerCase(Locale.ROOT);
+
+        if (text.contains("眼镜") || text.contains("glasses") || text.contains("eyewear")) {
+            return "Apparel & Accessories > Eyewear";
+        }
+        if (text.contains("毛衣") || text.contains("sweater") || text.contains("knit")) {
+            return "Apparel & Accessories > Clothing > Outerwear & Coats > Sweaters";
+        }
+        return "Apparel & Accessories";
     }
 }
