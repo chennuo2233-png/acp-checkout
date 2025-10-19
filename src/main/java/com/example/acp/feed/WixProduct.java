@@ -13,12 +13,15 @@ public class WixProduct {
     private String description;
     private String sku;
     private Double weight;
+    private boolean manageVariants;
+    private List<ProductOption> productOptions;
     
     // 嵌套对象
     private StockInfo stock;
     private PriceData priceData;
     private MediaInfo media;
     private PageUrl productPageUrl;
+    
     
     // getters & setters
     public String getId() { return id; }
@@ -56,6 +59,12 @@ public class WixProduct {
 
     public PageUrl getProductPageUrl() { return productPageUrl; }
     public void setProductPageUrl(PageUrl productPageUrl) { this.productPageUrl = productPageUrl; }
+
+    public boolean isManageVariants() { return manageVariants; }
+    public void setManageVariants(boolean manageVariants) { this.manageVariants = manageVariants; }
+
+public List<ProductOption> getProductOptions() { return productOptions; }
+public void setProductOptions(List<ProductOption> productOptions) { this.productOptions = productOptions; }
 
     // 嵌套类：库存信息
     public static class StockInfo {
@@ -130,4 +139,23 @@ public class WixProduct {
         public String getPath() { return path; }
         public void setPath(String path) { this.path = path; }
     }
+
+    public static class ProductOption {
+    private String name;       // 例如 "Size"
+    private String optionType; // 例如 "drop_down"
+    private List<OptionChoice> choices;
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public String getOptionType() { return optionType; }
+    public void setOptionType(String optionType) { this.optionType = optionType; }
+    public List<OptionChoice> getChoices() { return choices; }
+    public void setChoices(List<OptionChoice> choices) { this.choices = choices; }
+
+    public static class OptionChoice {
+        private String value; // 例如 "Small" / "Medium" / "Large"
+        public String getValue() { return value; }
+        public void setValue(String value) { this.value = value; }
+    }
+}
 }

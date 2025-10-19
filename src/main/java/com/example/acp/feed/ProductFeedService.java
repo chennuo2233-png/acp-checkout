@@ -63,122 +63,138 @@ private static final String DEFAULT_CATEGORY =
     /** 每 15 分钟刷新一次产品 feed，符合 OpenAI 的刷新建议。 */
     @Scheduled(initialDelay = 0, fixedRate = 15 * 60 * 1000)
     public void refreshFeed() {
-        try {
-            List<WixProduct> wixProducts = wixClient.fetchProducts();
-            List<Map<String, Object>> mapped = new ArrayList<>();
+    try {
+        List<WixProduct> wixProducts = wixClient.fetchProducts();
+        List<Map<String, Object>> mapped = new ArrayList<>();
 
-            for (WixProduct p : wixProducts) {
-                Map<String, Object> item = new LinkedHashMap<>();
+        for (WixProduct p : wixProducts) {
 
-                // ===== 1) OpenAI Flags（Required）=====
-                item.put("enable_search", "true");   // lower-case string
-                item.put("enable_checkout", "true"); // enable_checkout 要求 enable_search=true
+            // ---------- 先准备“基底 item”（除 id/offer_id/变体专属字段） ----------
+            Map<String, Object> base = new LinkedHashMap<>();
 
-                // ===== 2) Basic Product Data（Required）=====
-                String id = (nonEmpty(p.getSku()) ? p.getSku() : p.getId());
-                item.put("id", safeId(id));                                         // Merchant product ID
-                item.put("title", safeTitle(p.getName()));                           // Title（<=150）
-                item.put("description", stripHtml(p.getDescription()));              // Plain text（<=5000）
-                String detailUrl = ensureHttps(buildProductUrl(p));
-                item.put("link", detailUrl);                                        // Product detail URL
+            // Flags
+            base.put("enable_search", "true");
+            base.put("enable_checkout", "true");
 
-                // gtin（Recommended）/ mpn（gtin 缺失时 Required）
-                // Wix 常无 GTIN/UPC/ISBN，使用 SKU 作为 mpn 的合理兜底
-                if (nonEmpty(p.getSku())) {
-                    item.put("mpn", p.getSku());
-                }
+            // Basic
+            String parentId = nonEmpty(p.getSku()) ? p.getSku() : p.getId();
+            String title = safeTitle(p.getName());
+            base.put("title", title);
+            base.put("description", stripHtml(p.getDescription()));
+            base.put("link", ensureHttps(buildProductUrl(p)));
+            if (nonEmpty(p.getSku())) base.put("mpn", p.getSku());
 
-                // ===== 3) Item Information（强推荐/部分 Required）=====
-                item.put("condition", "new");                                        // 若非全新品，请按实际填 refurbished/used
-                item.put("brand", BRAND_DEFAULT);
-                item.put("material", MATERIAL_DEFAULT);
-                item.put("product_category", mapCategory(p));                         // e.g. Apparel & Accessories > Eyewear
-                String weight = formatWeight(p.getWeight());
-                item.put("weight", (weight != null ? weight : WEIGHT_DEFAULT));
+            // Item info
+            base.put("condition", "new");
+            base.put("brand", BRAND_DEFAULT);
+            base.put("material", MATERIAL_DEFAULT);
+            base.put("product_category", mapCategory(p));
+            String weight = formatWeight(p.getWeight());
+            base.put("weight", (weight != null ? weight : WEIGHT_DEFAULT));
 
-                // ===== 4) Media（Required/Optional）=====
-                String mainImage = extractMainImage(p);
-                if (nonEmpty(mainImage)) {
-                    item.put("image_link", mainImage);                                // 主图
-                }
-                List<String> extraImages = extractAdditionalImages(p, mainImage);
-                if (!extraImages.isEmpty()) {
-                    item.put("additional_image_link", extraImages);                   // 额外图片（URL 数组）
-                }
+            // Media
+            String mainImage = extractMainImage(p);
+            if (nonEmpty(mainImage)) base.put("image_link", mainImage);
+            List<String> extraImages = extractAdditionalImages(p, mainImage);
+            if (!extraImages.isEmpty()) base.put("additional_image_link", extraImages);
 
-                // ===== 5) Price & Promotions（Required + Optional）=====
-                Map<String, Object> price = new LinkedHashMap<>();
-                if (p.getPriceData() != null) {
-                    price.put("amount", p.getPriceData().getPrice());                     // 例如 7.5
-                    price.put("currency", p.getPriceData().getCurrency());                // 例如 USD
-                }
-                item.put("price", price);
+            // Price
+            Map<String, Object> price = new LinkedHashMap<>();
+            if (p.getPriceData() != null) {
+                price.put("amount", p.getPriceData().getPrice());
+                price.put("currency", p.getPriceData().getCurrency());
+            }
+            base.put("price", price);
 
-                if (p.getPriceData() != null
-                        && p.getPriceData().getDiscountedPrice() != null
-                        && p.getPriceData().getDiscountedPrice() < p.getPriceData().getPrice()) {
-                    Map<String, Object> sale = new LinkedHashMap<>();
-                    sale.put("amount", p.getPriceData().getDiscountedPrice());
-                    sale.put("currency", p.getPriceData().getCurrency());
-                    item.put("sale_price", sale);
+            if (p.getPriceData() != null
+                    && p.getPriceData().getDiscountedPrice() != null
+                    && p.getPriceData().getDiscountedPrice() < p.getPriceData().getPrice()) {
+                Map<String, Object> sale = new LinkedHashMap<>();
+                sale.put("amount", p.getPriceData().getDiscountedPrice());
+                sale.put("currency", p.getPriceData().getCurrency());
+                base.put("sale_price", sale);
 
-                    // 可选：没有真实活动窗口时可以省略
-                    String start = OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                    String end   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(7).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                    item.put("sale_price_effective_date", start + "/" + end);
-                }
-
-                // ===== 6) Availability & Inventory（Required）=====
-                String availability = mapAvailability(p.getStock() != null ? p.getStock().getInventoryStatus() : null);
-                item.put("availability", availability);                               // in_stock / out_of_stock / preorder
-
-                if ("preorder".equals(availability)) {
-                    String availDate = OffsetDateTime.now(ZoneOffset.UTC)
-                            .plusDays(PREORDER_OFFSET_DAYS)
-                            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-                    item.put("availability_date", availDate);
-                }
-
-                int qty = DEFAULT_INVENTORY;
-                if (p.getStock() != null) {
-                    if (p.getStock().isTrackInventory()) {
-                        qty = p.getStock().isInStock() ? DEFAULT_INVENTORY : 0;      // 没有具体数量 API，用兜底
-                    } else {
-                        qty = DEFAULT_INVENTORY;
-                    }
-                }
-                item.put("inventory_quantity", Math.max(0, qty));
-
-                // ===== 7) Variants（当存在变体时才需要 item_group_id）=====
-                // 未来若 manageVariants=true，请在此补充 item_group_id / color / size 等
-
-                // ===== 8) Fulfillment（Required where applicable）=====
-                item.put("shipping", parseShippingLines(SHIPPING_LINES));
-
-                // ===== 9) Merchant Info（Required / 当启用结账时必填）=====
-                item.put("seller_name", SELLER_NAME);
-                item.put("seller_url", ensureHttps(SELLER_URL));
-                if (nonEmpty(RETURNS_URL)) item.put("return_policy", ensureHttps(RETURNS_URL));
-                item.put("return_window", RETURN_WINDOW);
-                if (nonEmpty(PRIVACY_URL)) item.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
-                if (nonEmpty(TOS_URL))     item.put("seller_tos", ensureHttps(TOS_URL));
-
-                // ===== 10) 推荐的唯一报价 ID（可帮助去重/对账，非必填）=====
-                String offerId = item.get("id") + "-" +
-                        (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
-                        (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
-                item.put("offer_id", offerId);
-
-                mapped.add(item);
+                String start = OffsetDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                String end   = OffsetDateTime.now(ZoneOffset.UTC).plusDays(7).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                base.put("sale_price_effective_date", start + "/" + end);
             }
 
-            cached.set(Collections.unmodifiableList(mapped));
-            lastGeneratedAt = OffsetDateTime.now(ZoneOffset.UTC).toString();
-            System.out.println("Product feed refreshed: " + mapped.size());
-        } catch (Exception e) {
-            e.printStackTrace();
+            // Availability & inventory
+            String availability = mapAvailability(p.getStock() != null ? p.getStock().getInventoryStatus() : null);
+            int qty = DEFAULT_INVENTORY;
+            if (p.getStock() != null) {
+                if (p.getStock().isTrackInventory()) {
+                    qty = p.getStock().isInStock() ? DEFAULT_INVENTORY : 0;
+                } else {
+                    qty = DEFAULT_INVENTORY;
+                }
+            }
+            base.put("availability", availability);
+            if ("preorder".equals(availability)) {
+                String availDate = OffsetDateTime.now(ZoneOffset.UTC)
+                        .plusDays(PREORDER_OFFSET_DAYS)
+                        .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                base.put("availability_date", availDate);
+            }
+            base.put("inventory_quantity", Math.max(0, qty));
+
+            // Fulfillment
+            base.put("shipping", parseShippingLines(SHIPPING_LINES));
+
+            // Merchant & returns
+            base.put("seller_name", SELLER_NAME);
+            base.put("seller_url", ensureHttps(SELLER_URL));
+            if (nonEmpty(RETURNS_URL)) base.put("return_policy", ensureHttps(RETURNS_URL));
+            base.put("return_window", RETURN_WINDOW);
+            if (nonEmpty(PRIVACY_URL)) base.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
+            if (nonEmpty(TOS_URL))     base.put("seller_tos", ensureHttps(TOS_URL));
+
+            // ---------- 检测“Size”选项，按变体展开 ----------
+            List<String> sizeChoices = extractSizeChoices(p); // 见下方新方法
+            if (!sizeChoices.isEmpty()) {
+                // 规范：变体行必须共享同一个 item_group_id，并写 variant 属性（这里是 size）:contentReference[oaicite:5]{index=5}
+                String groupId = safeId(p.getId()); // 建议用 Wix 的 product id 作为 group id（稳定）
+
+                for (String size : sizeChoices) {
+                    Map<String, Object> variant = new LinkedHashMap<>(base);
+                    String variantId = safeId(parentId + "-sz-" + slug(size));
+
+                    variant.put("id", variantId);
+                    variant.put("item_group_id", groupId);
+                    variant.put("item_group_title", title);
+                    variant.put("size", size);
+
+                    // 推荐提供唯一 offer_id，便于去重与对账（id+price+currency）:contentReference[oaicite:6]{index=6}
+                    String offerId = variantId + "-" +
+                            (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
+                            (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
+                    variant.put("offer_id", offerId);
+
+                    mapped.add(variant);
+                }
+                // 有变体时，不再单独输出父商品行
+                continue;
+            }
+
+            // ---------- 没有 Size 选项：按单品输出 ----------
+            Map<String, Object> single = new LinkedHashMap<>(base);
+            single.put("id", safeId(parentId));
+            String offerId = single.get("id") + "-" +
+                    (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
+                    (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
+            single.put("offer_id", offerId);
+            mapped.add(single);
         }
+
+        cached.set(Collections.unmodifiableList(mapped));
+        lastGeneratedAt = OffsetDateTime.now(ZoneOffset.UTC).toString();
+        System.out.println("Product feed refreshed (with variants): " + mapped.size());
+    } catch (Exception e) {
+        e.printStackTrace();
     }
+}
+
+    
 
     /**
      * Controller 调用该方法返回 JSON
@@ -201,6 +217,33 @@ private static final String DEFAULT_CATEGORY =
         String v = System.getenv(k);
         return (v == null || v.isBlank()) ? def : v.trim();
     }
+
+    /** 提取 Size 选项的可选值（大小写不敏感；支持 “size/尺寸” 名称） */
+private List<String> extractSizeChoices(WixProduct p) {
+    List<String> out = new ArrayList<>();
+    if (p == null || p.getProductOptions() == null) return out;
+    for (WixProduct.ProductOption opt : p.getProductOptions()) {
+        if (opt == null || opt.getName() == null) continue;
+        String name = opt.getName().trim().toLowerCase(Locale.ROOT);
+        if (!name.equals("size") && !name.equals("尺寸")) continue;
+        if (opt.getChoices() == null) continue;
+        for (WixProduct.ProductOption.OptionChoice ch : opt.getChoices()) {
+            if (ch != null && ch.getValue() != null && !ch.getValue().trim().isEmpty()) {
+                out.add(ch.getValue().trim());
+            }
+        }
+    }
+    return out;
+}
+
+/** 把 "Large Tall" 变成 "large-tall" 这样的安全片段用于 variantId */
+private String slug(String s) {
+    String t = s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
+    t = t.replaceAll("[^a-z0-9]+", "-");
+    t = t.replaceAll("^-+|-+$", "");
+    return t.isEmpty() ? "na" : t;
+}
+
 
     private static int parseInt(String s, int def) {
         try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
