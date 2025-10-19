@@ -40,6 +40,14 @@ public class ProductFeedService {
     // 当库存状态为 PREORDER 且无具体可用日期时，向后推几天（规范建议 preorder 提供 availability_date）
     private static final int    PREORDER_OFFSET_DAYS = parseInt(getenv("PREORDER_AVAIL_DAYS", "7"), 7);
 
+    // 产品目录设置
+    private static final String CATEGORY_RULES_RAW =
+        System.getenv().getOrDefault("CATEGORY_RULES",
+                "eyewear|glasses|眼镜=>Apparel & Accessories > Eyewear;" +
+                "sweater|knit|毛衣=>Apparel & Accessories > Clothing > Outerwear & Coats > Sweaters");
+private static final String DEFAULT_CATEGORY =
+        System.getenv().getOrDefault("DEFAULT_CATEGORY", "Apparel & Accessories");
+
     // ==== 缓存最新 feed 数据 ====
     private final AtomicReference<List<Map<String, Object>>> cached =
             new AtomicReference<>(List.of());
@@ -296,18 +304,34 @@ public class ProductFeedService {
         return list;
     }
 
-    /** 依据标题/Slug 做一个极简类目映射；实际项目可换为你的类目表 */
-    private String mapCategory(WixProduct p) {
-        String name = Optional.ofNullable(p.getName()).orElse("");
-        String slug = Optional.ofNullable(p.getSlug()).orElse("");
-        String text = (name + " " + slug).toLowerCase(Locale.ROOT);
+    
+    /** 依据标题/slug（可按需扩：tags、collections）做可配置的类目映射 */
+private String mapCategory(WixProduct p) {
+    String name = Optional.ofNullable(p.getName()).orElse("");
+    String slug = Optional.ofNullable(p.getSlug()).orElse("");
 
-        if (text.contains("眼镜") || text.contains("glasses") || text.contains("eyewear")) {
-            return "Apparel & Accessories > Eyewear";
+    // 组合可搜索文本：标题 + slug（如需可加上 tags/collections）
+    String text = (name + " " + slug).toLowerCase(Locale.ROOT);
+
+    // 逐条规则匹配：左边是多个关键词用 | 分隔，右边是类目路径
+    for (String rule : CATEGORY_RULES_RAW.split(";")) {
+        String r = rule.trim();
+        if (r.isEmpty() || !r.contains("=>")) continue;
+
+        String[] kv = r.split("=>", 2);
+        String keys = kv[0].trim().toLowerCase(Locale.ROOT);
+        String categoryPath = kv[1].trim();
+
+        // 每个规则的关键词都用 | 分隔，只要命中一个就返回该类目
+        for (String k : keys.split("\\|")) {
+            String key = k.trim();
+            if (key.isEmpty()) continue;
+            if (text.contains(key)) {
+                return categoryPath;
+            }
         }
-        if (text.contains("毛衣") || text.contains("sweater") || text.contains("knit")) {
-            return "Apparel & Accessories > Clothing > Outerwear & Coats > Sweaters";
-        }
-        return "Apparel & Accessories";
     }
+    // 未命中任何规则 → 兜底类目
+    return DEFAULT_CATEGORY;
+}
 }
