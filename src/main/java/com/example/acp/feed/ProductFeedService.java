@@ -62,7 +62,7 @@ private static final String DEFAULT_CATEGORY =
 
     /** 每 15 分钟刷新一次产品 feed，符合 OpenAI 的刷新建议。 */
     @Scheduled(initialDelay = 0, fixedRate = 15 * 60 * 1000)
-    public void refreshFeed() {
+public void refreshFeed() {
     try {
         List<WixProduct> wixProducts = wixClient.fetchProducts();
         List<Map<String, Object>> mapped = new ArrayList<>();
@@ -78,10 +78,12 @@ private static final String DEFAULT_CATEGORY =
 
             // Basic
             String parentId = nonEmpty(p.getSku()) ? p.getSku() : p.getId();
-            String title = safeTitle(p.getName());
-            base.put("title", title);
+            String baseTitleStr = safeTitle(p.getName());
+            base.put("title", baseTitleStr);
             base.put("description", stripHtml(p.getDescription()));
-            base.put("link", ensureHttps(buildProductUrl(p)));
+            // 若你项目里有 buildProductUrl() 就用那个；否则保留 ensureHttps + Wix 链接拼接
+            String detailUrl = ensureHttps(p.getProductPageUrl().getBase() + p.getProductPageUrl().getPath());
+            base.put("link", detailUrl);
             if (nonEmpty(p.getSku())) base.put("mpn", p.getSku());
 
             // Item info
@@ -89,22 +91,22 @@ private static final String DEFAULT_CATEGORY =
             base.put("brand", BRAND_DEFAULT);
             base.put("material", MATERIAL_DEFAULT);
             base.put("product_category", mapCategory(p));
-            String weight = formatWeight(p.getWeight());
-            base.put("weight", (weight != null ? weight : WEIGHT_DEFAULT));
+            String weightStr = formatWeight(p.getWeight());
+            base.put("weight", (weightStr != null ? weightStr : WEIGHT_DEFAULT));
 
             // Media
-            String mainImage = extractMainImage(p);
-            if (nonEmpty(mainImage)) base.put("image_link", mainImage);
-            List<String> extraImages = extractAdditionalImages(p, mainImage);
+            String mainImageUrl = ensureHttps(p.getMedia().getMainMedia().getImage().getUrl());
+            if (nonEmpty(mainImageUrl)) base.put("image_link", mainImageUrl);
+            List<String> extraImages = extractAdditionalImages(p, mainImageUrl);
             if (!extraImages.isEmpty()) base.put("additional_image_link", extraImages);
 
-            // Price
-            Map<String, Object> price = new LinkedHashMap<>();
+            // Price（父级）
+            Map<String, Object> basePriceMap = new LinkedHashMap<>();
             if (p.getPriceData() != null) {
-                price.put("amount", p.getPriceData().getPrice());
-                price.put("currency", p.getPriceData().getCurrency());
+                basePriceMap.put("amount", p.getPriceData().getPrice());
+                basePriceMap.put("currency", p.getPriceData().getCurrency());
             }
-            base.put("price", price);
+            base.put("price", basePriceMap);
 
             if (p.getPriceData() != null
                     && p.getPriceData().getDiscountedPrice() != null
@@ -119,24 +121,24 @@ private static final String DEFAULT_CATEGORY =
                 base.put("sale_price_effective_date", start + "/" + end);
             }
 
-            // Availability & inventory
-            String availability = mapAvailability(p.getStock() != null ? p.getStock().getInventoryStatus() : null);
-            int qty = DEFAULT_INVENTORY;
+            // Availability & inventory（父级兜底）
+            String availabilityStr = mapAvailability(p.getStock() != null ? p.getStock().getInventoryStatus() : null);
+            int invQty = DEFAULT_INVENTORY;
             if (p.getStock() != null) {
                 if (p.getStock().isTrackInventory()) {
-                    qty = p.getStock().isInStock() ? DEFAULT_INVENTORY : 0;
+                    invQty = p.getStock().isInStock() ? DEFAULT_INVENTORY : 0;
                 } else {
-                    qty = DEFAULT_INVENTORY;
+                    invQty = DEFAULT_INVENTORY;
                 }
             }
-            base.put("availability", availability);
-            if ("preorder".equals(availability)) {
+            base.put("availability", availabilityStr);
+            if ("preorder".equals(availabilityStr)) {
                 String availDate = OffsetDateTime.now(ZoneOffset.UTC)
                         .plusDays(PREORDER_OFFSET_DAYS)
                         .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
                 base.put("availability_date", availDate);
             }
-            base.put("inventory_quantity", Math.max(0, qty));
+            base.put("inventory_quantity", Math.max(0, invQty));
 
             // Fulfillment
             base.put("shipping", parseShippingLines(SHIPPING_LINES));
@@ -149,22 +151,107 @@ private static final String DEFAULT_CATEGORY =
             if (nonEmpty(PRIVACY_URL)) base.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
             if (nonEmpty(TOS_URL))     base.put("seller_tos", ensureHttps(TOS_URL));
 
-            // ---------- 检测“Size”选项，按变体展开 ----------
-            List<String> sizeChoices = extractSizeChoices(p); // 见下方新方法
-            if (!sizeChoices.isEmpty()) {
-                // 规范：变体行必须共享同一个 item_group_id，并写 variant 属性（这里是 size）:contentReference[oaicite:5]{index=5}
-                String groupId = safeId(p.getId()); // 建议用 Wix 的 product id 作为 group id（稳定）
+            // ---------- 优先：用真实变体（价格/库存/sku 覆盖父级） ----------
+            List<Map<String, Object>> realVariants = wixClient.fetchVariantsByProductId(p.getId());
+            if (realVariants != null && !realVariants.isEmpty()) {
+                String groupId = safeId(p.getId()); // 用父产品 ID 作为 group id（稳定）
+                for (Map<String, Object> v : realVariants) {
+                    Map<String, Object> variant = new LinkedHashMap<>(base);
 
+                    // choices（size/color/...）
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> choices = (Map<String, Object>) v.get("choices");
+
+                    // 变体 ID / SKU
+                    String variantObjId = str(v, "id");
+                    String variantSku   = str(v, "sku");
+                    if (variantSku != null) {
+                        variant.put("mpn", variantSku);  // 没 GTIN 时 mpn 可满足条件必填
+                    }
+
+                    // 价格覆盖（若有）
+                    Double vPrice = num(v, "priceData", "price");
+                    String vCurr  = str(v, "priceData", "currency");
+                    if (vPrice != null && vCurr != null) {
+                        Map<String, Object> variantPriceMap = new LinkedHashMap<>();
+                        variantPriceMap.put("amount", vPrice);
+                        variantPriceMap.put("currency", vCurr);
+                        variant.put("price", variantPriceMap);
+
+                        Double vSale = num(v, "priceData", "discountedPrice");
+                        if (vSale != null && vSale < vPrice) {
+                            Map<String, Object> sale = new LinkedHashMap<>();
+                            sale.put("amount", vSale);
+                            sale.put("currency", vCurr);
+                            variant.put("sale_price", sale);
+                        }
+                    }
+
+                    // 库存覆盖（若有）
+                    Boolean inStock = bool(v, "inventory", "inStock");
+                    Integer variantQty = intVal(v, "inventory", "quantity");
+                    if (inStock != null) {
+                        variant.put("availability", inStock ? "in_stock" : "out_of_stock");
+                        variant.put("inventory_quantity", (inStock ? (variantQty != null ? variantQty : DEFAULT_INVENTORY) : 0));
+                    }
+
+                    // 区分属性写入
+                    if (choices != null && !choices.isEmpty()) {
+                        for (Map.Entry<String, Object> e : choices.entrySet()) {
+                            String k = e.getKey();
+                            Object val = e.getValue();
+                            if (val == null) continue;
+                            String vs = String.valueOf(val).trim();
+                            if (vs.isEmpty()) continue;
+
+                            String keyLower = k.toLowerCase(Locale.ROOT);
+                            if (keyLower.contains("size") || "尺寸".equals(k)) {
+                                variant.put("size", vs);
+                            } else if (keyLower.contains("color") || "颜色".equals(k)) {
+                                variant.put("color", vs);
+                            } else {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> attrs = (Map<String, Object>) variant.getOrDefault("attributes", new LinkedHashMap<>());
+                                attrs.put(k, vs);
+                                variant.put("attributes", attrs);
+                            }
+                        }
+                    }
+
+                    // 分组与最终 ID
+                    variant.put("item_group_id", groupId);
+                    variant.put("item_group_title", baseTitleStr);
+
+                    String idPart = (variantSku != null ? variantSku : (variantObjId != null ? variantObjId : "v-" + UUID.randomUUID()));
+                    variant.put("id", safeId(parentId + "-" + idPart));
+
+                    // offer_id：建议提供（id + price + currency）
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> pr = (Map<String, Object>) variant.get("price");
+                    String offerId = variant.get("id") + "-" +
+                            (pr != null ? String.valueOf(pr.get("amount")) : "0") + "-" +
+                            (pr != null ? String.valueOf(pr.get("currency")) : "usd");
+                    variant.put("offer_id", offerId);
+
+                    mapped.add(variant);
+                }
+                // 已输出全部变体行 → 跳过“按 Size 兜底”的逻辑
+                continue;
+            }
+
+            // ---------- 没有真实变体：可保留你之前的“按 Size 兜底展开”，或按单品输出 ----------
+            List<String> sizeChoices = extractSizeChoices(p); // 若你已实现该方法
+            if (sizeChoices != null && !sizeChoices.isEmpty()) {
+                String groupId = safeId(p.getId());
                 for (String size : sizeChoices) {
                     Map<String, Object> variant = new LinkedHashMap<>(base);
                     String variantId = safeId(parentId + "-sz-" + slug(size));
 
                     variant.put("id", variantId);
                     variant.put("item_group_id", groupId);
-                    variant.put("item_group_title", title);
+                    variant.put("item_group_title", baseTitleStr);
                     variant.put("size", size);
 
-                    // 推荐提供唯一 offer_id，便于去重与对账（id+price+currency）:contentReference[oaicite:6]{index=6}
                     String offerId = variantId + "-" +
                             (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
                             (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
@@ -172,18 +259,16 @@ private static final String DEFAULT_CATEGORY =
 
                     mapped.add(variant);
                 }
-                // 有变体时，不再单独输出父商品行
-                continue;
+            } else {
+                // 作为单品输出
+                Map<String, Object> single = new LinkedHashMap<>(base);
+                single.put("id", safeId(parentId));
+                String offerId = single.get("id") + "-" +
+                        (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
+                        (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
+                single.put("offer_id", offerId);
+                mapped.add(single);
             }
-
-            // ---------- 没有 Size 选项：按单品输出 ----------
-            Map<String, Object> single = new LinkedHashMap<>(base);
-            single.put("id", safeId(parentId));
-            String offerId = single.get("id") + "-" +
-                    (p.getPriceData() != null ? p.getPriceData().getPrice() : "0") + "-" +
-                    (p.getPriceData() != null ? p.getPriceData().getCurrency() : "usd");
-            single.put("offer_id", offerId);
-            mapped.add(single);
         }
 
         cached.set(Collections.unmodifiableList(mapped));
@@ -194,7 +279,6 @@ private static final String DEFAULT_CATEGORY =
     }
 }
 
-    
 
     /**
      * Controller 调用该方法返回 JSON
@@ -377,4 +461,50 @@ private String mapCategory(WixProduct p) {
     // 未命中任何规则 → 兜底类目
     return DEFAULT_CATEGORY;
 }
+
+@SuppressWarnings("unchecked")
+private Map<String, Object> map(Map<String, Object> m, String... path) {
+    Object cur = m;
+    for (String k : path) {
+        if (!(cur instanceof Map)) return null;
+        cur = ((Map<String, Object>) cur).get(k);
+        if (cur == null) return null;
+    }
+    return (Map<String, Object>) cur;
+}
+private String str(Map<String, Object> m, String... path) {
+    Object cur = m;
+    for (String k : path) {
+        if (!(cur instanceof Map)) return null;
+        cur = ((Map<?, ?>) cur).get(k);
+        if (cur == null) return null;
+    }
+    return String.valueOf(cur);
+}
+private Double num(Map<String, Object> m, String... path) {
+    Object cur = m;
+    for (String k : path) {
+        if (!(cur instanceof Map)) return null;
+        cur = ((Map<?, ?>) cur).get(k);
+        if (cur == null) return null;
+    }
+    if (cur instanceof Number) return ((Number) cur).doubleValue();
+    try { return Double.valueOf(String.valueOf(cur)); } catch (Exception e) { return null; }
+}
+private Integer intVal(Map<String, Object> m, String... path) {
+    Double n = num(m, path);
+    return n == null ? null : n.intValue();
+}
+private Boolean bool(Map<String, Object> m, String... path) {
+    Object cur = m;
+    for (String k : path) {
+        if (!(cur instanceof Map)) return null;
+        cur = ((Map<?, ?>) cur).get(k);
+        if (cur == null) return null;
+    }
+    if (cur instanceof Boolean) return (Boolean) cur;
+    if (cur instanceof String) return Boolean.parseBoolean((String) cur);
+    return null;
+}
+
 }
