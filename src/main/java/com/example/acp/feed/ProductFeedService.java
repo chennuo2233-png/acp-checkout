@@ -151,93 +151,120 @@ public void refreshFeed() {
             if (nonEmpty(PRIVACY_URL)) base.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
             if (nonEmpty(TOS_URL))     base.put("seller_tos", ensureHttps(TOS_URL));
 
+            
             // ---------- 优先：用真实变体（价格/库存/sku 覆盖父级） ----------
-            List<Map<String, Object>> realVariants = wixClient.fetchVariantsByProductId(p.getId());
-            if (realVariants != null && !realVariants.isEmpty()) {
-                String groupId = safeId(p.getId()); // 用父产品 ID 作为 group id（稳定）
-                for (Map<String, Object> v : realVariants) {
-                    Map<String, Object> variant = new LinkedHashMap<>(base);
+List<Map<String, Object>> realVariants = wixClient.fetchVariantsByProductId(p.getId());
+if (realVariants != null && !realVariants.isEmpty()) {
+    // 先看这些变体是否“有可区分的规格”（如 size/color）
+    Set<String> signatures = new LinkedHashSet<>();
+    List<Map<String, String>> allChoicePairs = new ArrayList<>();
+    for (Map<String, Object> v : realVariants) {
+        Map<String, String> pairs = extractChoicePairsFromVariant(v); // 新增工具方法
+        allChoicePairs.add(pairs);
+        signatures.add(buildChoiceSignature(pairs));                   // 新增工具方法
+    }
 
-                    // choices（size/color/...）
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> choices = (Map<String, Object>) v.get("choices");
+    boolean allEmptyOrSame = signatures.isEmpty()
+            || (signatures.size() == 1 && (signatures.iterator().next().isEmpty()));
 
-                    // 变体 ID / SKU
-                    String variantObjId = str(v, "id");
-                    String variantSku   = str(v, "sku");
-                    if (variantSku != null) {
-                        variant.put("mpn", variantSku);  // 没 GTIN 时 mpn 可满足条件必填
-                    }
+    if (allEmptyOrSame) {
+        // 没有任何区分属性 → 不展开为多条，按“单品”或“Size兜底”逻辑继续
+        // （不进入本分支的构造，后面会执行“兜底Size”或“单品”输出）
+    } else {
+        String groupId = safeId(p.getId()); // 分组ID：父产品 ID（稳定）
+        Set<String> seenSig = new HashSet<>();
 
-                    // 价格覆盖（若有）
-                    Double vPrice = num(v, "priceData", "price");
-                    String vCurr  = str(v, "priceData", "currency");
-                    if (vPrice != null && vCurr != null) {
-                        Map<String, Object> variantPriceMap = new LinkedHashMap<>();
-                        variantPriceMap.put("amount", vPrice);
-                        variantPriceMap.put("currency", vCurr);
-                        variant.put("price", variantPriceMap);
+        for (int i = 0; i < realVariants.size(); i++) {
+            Map<String, Object> v = realVariants.get(i);
+            Map<String, String> pairs = allChoicePairs.get(i);
+            String sig = buildChoiceSignature(pairs);
 
-                        Double vSale = num(v, "priceData", "discountedPrice");
-                        if (vSale != null && vSale < vPrice) {
-                            Map<String, Object> sale = new LinkedHashMap<>();
-                            sale.put("amount", vSale);
-                            sale.put("currency", vCurr);
-                            variant.put("sale_price", sale);
-                        }
-                    }
-
-                    // 库存覆盖（若有）
-                    Boolean inStock = bool(v, "inventory", "inStock");
-                    Integer variantQty = intVal(v, "inventory", "quantity");
-                    if (inStock != null) {
-                        variant.put("availability", inStock ? "in_stock" : "out_of_stock");
-                        variant.put("inventory_quantity", (inStock ? (variantQty != null ? variantQty : DEFAULT_INVENTORY) : 0));
-                    }
-
-                    // 区分属性写入
-                    if (choices != null && !choices.isEmpty()) {
-                        for (Map.Entry<String, Object> e : choices.entrySet()) {
-                            String k = e.getKey();
-                            Object val = e.getValue();
-                            if (val == null) continue;
-                            String vs = String.valueOf(val).trim();
-                            if (vs.isEmpty()) continue;
-
-                            String keyLower = k.toLowerCase(Locale.ROOT);
-                            if (keyLower.contains("size") || "尺寸".equals(k)) {
-                                variant.put("size", vs);
-                            } else if (keyLower.contains("color") || "颜色".equals(k)) {
-                                variant.put("color", vs);
-                            } else {
-                                @SuppressWarnings("unchecked")
-                                Map<String, Object> attrs = (Map<String, Object>) variant.getOrDefault("attributes", new LinkedHashMap<>());
-                                attrs.put(k, vs);
-                                variant.put("attributes", attrs);
-                            }
-                        }
-                    }
-
-                    // 分组与最终 ID
-                    variant.put("item_group_id", groupId);
-                    variant.put("item_group_title", baseTitleStr);
-
-                    String idPart = (variantSku != null ? variantSku : (variantObjId != null ? variantObjId : "v-" + UUID.randomUUID()));
-                    variant.put("id", safeId(parentId + "-" + idPart));
-
-                    // offer_id：建议提供（id + price + currency）
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> pr = (Map<String, Object>) variant.get("price");
-                    String offerId = variant.get("id") + "-" +
-                            (pr != null ? String.valueOf(pr.get("amount")) : "0") + "-" +
-                            (pr != null ? String.valueOf(pr.get("currency")) : "usd");
-                    variant.put("offer_id", offerId);
-
-                    mapped.add(variant);
-                }
-                // 已输出全部变体行 → 跳过“按 Size 兜底”的逻辑
+            // 去重：相同 choices 的只保留第一条
+            if (!seenSig.add(sig)) {
                 continue;
             }
+
+            Map<String, Object> variant = new LinkedHashMap<>(base);
+
+            // 变体 ID / SKU
+            String variantObjId = str(v, "id");
+            String variantSku   = str(v, "sku");
+            if (variantSku != null && !variantSku.isBlank()) {
+                variant.put("mpn", variantSku); // 没 GTIN 时 mpn 可满足条件必填
+            }
+
+            // 价格覆盖（若有）
+            Double vPrice = num(v, "priceData", "price");
+            String vCurr  = str(v, "priceData", "currency");
+            if (vPrice != null && vCurr != null) {
+                Map<String, Object> variantPriceMap = new LinkedHashMap<>();
+                variantPriceMap.put("amount", vPrice);
+                variantPriceMap.put("currency", vCurr);
+                variant.put("price", variantPriceMap);
+
+                Double vSale = num(v, "priceData", "discountedPrice");
+                if (vSale != null && vSale < vPrice) {
+                    Map<String, Object> sale = new LinkedHashMap<>();
+                    sale.put("amount", vSale);
+                    sale.put("currency", vCurr);
+                    variant.put("sale_price", sale);
+                }
+            }
+
+            // 库存覆盖（若有）
+            Boolean inStock = bool(v, "inventory", "inStock");
+            Integer variantQty = intVal(v, "inventory", "quantity");
+            if (inStock != null) {
+                variant.put("availability", inStock ? "in_stock" : "out_of_stock");
+                variant.put("inventory_quantity", (inStock ? (variantQty != null ? variantQty : DEFAULT_INVENTORY) : 0));
+            }
+
+            // 区分属性写入（size/color 单独字段，其它入 attributes）
+            if (!pairs.isEmpty()) {
+                for (Map.Entry<String, String> e : pairs.entrySet()) {
+                    String k = e.getKey();        // 已经是小写，比如 size / color / 其他
+                    String vs = e.getValue();
+                    if (k.equals("size")) {
+                        variant.put("size", vs);
+                    } else if (k.equals("color")) {
+                        variant.put("color", vs);
+                    } else {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> attrs = (Map<String, Object>) variant.getOrDefault("attributes", new LinkedHashMap<>());
+                        attrs.put(k, vs);
+                        variant.put("attributes", attrs);
+                    }
+                }
+            }
+
+            // 分组与最终 ID
+            variant.put("item_group_id", groupId);
+            variant.put("item_group_title", baseTitleStr);
+
+            String idPart = (variantSku != null && !variantSku.isBlank())
+                    ? variantSku
+                    : (variantObjId != null ? variantObjId : "v-" + UUID.randomUUID());
+            variant.put("id", safeId(parentId + "-" + idPart));
+
+            // offer_id：建议提供（id + price + currency）
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pr = (Map<String, Object>) variant.get("price");
+            String offerId = variant.get("id") + "-" +
+                    (pr != null ? String.valueOf(pr.get("amount")) : "0") + "-" +
+                    (pr != null ? String.valueOf(pr.get("currency")) : "usd");
+            variant.put("offer_id", offerId);
+
+            mapped.add(variant);
+        }
+
+        // 已输出变体行 → 跳过后续“Size兜底/单品”逻辑
+        if (!mapped.isEmpty() && Objects.equals(mapped.get(mapped.size()-1).get("item_group_id"), safeId(p.getId()))) {
+            continue;
+        }
+        // 如果因为都被去重导致没有任何变体被加入（极少发生），则继续走兜底逻辑
+    }
+}
+
 
             // ---------- 没有真实变体：可保留你之前的“按 Size 兜底展开”，或按单品输出 ----------
             List<String> sizeChoices = extractSizeChoices(p); // 若你已实现该方法
@@ -505,6 +532,59 @@ private Boolean bool(Map<String, Object> m, String... path) {
     if (cur instanceof Boolean) return (Boolean) cur;
     if (cur instanceof String) return Boolean.parseBoolean((String) cur);
     return null;
+}
+
+@SuppressWarnings("unchecked")
+private Map<String, String> extractChoicePairsFromVariant(Map<String, Object> v) {
+    Map<String, String> out = new LinkedHashMap<>();
+    if (v == null) return out;
+    Object choicesObj = v.get("choices");
+    if (choicesObj == null) return out;
+
+    if (choicesObj instanceof Map) {
+        Map<?, ?> m = (Map<?, ?>) choicesObj;
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            if (e.getKey() == null || e.getValue() == null) continue;
+            String k = String.valueOf(e.getKey()).trim();
+            String val = String.valueOf(e.getValue()).trim();
+            if (k.isEmpty() || val.isEmpty()) continue;
+            out.put(k.toLowerCase(Locale.ROOT), val);
+        }
+    } else if (choicesObj instanceof List) {
+        List<?> arr = (List<?>) choicesObj;
+        for (Object o : arr) {
+            if (!(o instanceof Map)) continue;
+            Map<String, Object> one = (Map<String, Object>) o;
+            // 兼容键名：name/option/optionName & value/selection/choice
+            String rawName = null;
+            if (one.get("name") != null) rawName = String.valueOf(one.get("name"));
+            else if (one.get("option") != null) rawName = String.valueOf(one.get("option"));
+            else if (one.get("optionName") != null) rawName = String.valueOf(one.get("optionName"));
+
+            String rawVal = null;
+            if (one.get("value") != null) rawVal = String.valueOf(one.get("value"));
+            else if (one.get("selection") != null) rawVal = String.valueOf(one.get("selection"));
+            else if (one.get("choice") != null) rawVal = String.valueOf(one.get("choice"));
+
+            if (rawName == null || rawVal == null) continue;
+            String k = rawName.trim();
+            String val = rawVal.trim();
+            if (k.isEmpty() || val.isEmpty()) continue;
+            out.put(k.toLowerCase(Locale.ROOT), val);
+        }
+    }
+
+    return out;
+}
+
+/** 把 choices 生成签名，用于判断“是否有区分属性”和去重；例如 size=small|color=green */
+private String buildChoiceSignature(Map<String, String> pairs) {
+    if (pairs == null || pairs.isEmpty()) return "";
+    List<String> parts = new ArrayList<>();
+    pairs.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(e -> parts.add(e.getKey() + "=" + e.getValue().toLowerCase(Locale.ROOT)));
+    return String.join("|", parts);
 }
 
 }
