@@ -26,7 +26,7 @@ public class ProductFeedService {
     private static final String RETURNS_URL      = getenv("RETURNS_URL", "");
     private static final int    RETURN_WINDOW    = parseInt(getenv("RETURN_WINDOW_DAYS", "30"), 30);
 
-    // 形如：US:All:Standard:10.00 USD|US:All:Express:18.00 USD
+    // 例：US:All:Standard:10.00 USD|US:All:Express:18.00 USD
     private static final String SHIPPING_LINES   = getenv("SHIPPING_LINES", "US:All:Standard:10.00 USD");
 
     // 缺省品牌/材质/重量；重量需“正数+单位”
@@ -149,14 +149,15 @@ public class ProductFeedService {
                 if (nonEmpty(PRIVACY_URL)) base.put("seller_privacy_policy", ensureHttps(PRIVACY_URL));
                 if (nonEmpty(TOS_URL))     base.put("seller_tos", ensureHttps(TOS_URL));
 
-                // ===== Variants：仅在 manageVariants=true 且存在选项时才尝试展开 =====
+                // ===== 变体逻辑：先尝试真实变体，其次兜底 Size，最后才输出父级单品 =====
                 boolean wroteVariant = false;
                 boolean hasOptions = (p.getProductOptions() != null && !p.getProductOptions().isEmpty());
+
                 if (p.isManageVariants() && hasOptions) {
                     // 拉取真实变体
                     List<Map<String, Object>> realVariants = wixClient.fetchVariantsByProductId(p.getId());
 
-                    // 解析每个变体的 choices，并构造签名用于判断是否“值得展开”
+                    // 解析 choices → 签名（判定是否有可区分属性）
                     Set<String> signatures = new LinkedHashSet<>();
                     List<Map<String, String>> allChoicePairs = new ArrayList<>();
                     for (Map<String, Object> v : realVariants) {
@@ -168,7 +169,7 @@ public class ProductFeedService {
                             || (signatures.size() == 1 && (signatures.iterator().next().isEmpty()));
 
                     if (!realVariants.isEmpty() && !allEmptyOrSame) {
-                        // 真的有可区分的选项：按变体展开
+                        // 真的有可区分的选项：按变体展开（只要写出了任意变体，就不再输出父级行）
                         String groupId = safeId(p.getId());
                         Set<String> seenSig = new HashSet<>();
 
@@ -176,20 +177,18 @@ public class ProductFeedService {
                             Map<String, Object> v = realVariants.get(i);
                             Map<String, String> pairs = allChoicePairs.get(i);
                             String sig = buildChoiceSignature(pairs);
+                            if (!seenSig.add(sig)) continue; // 去重：同签名只保留一条
 
-                            // 去重：相同 choices 的只保留第一条
-                            if (!seenSig.add(sig)) continue;
-
-                            Map<String, Object> variant = new LinkedHashMap<>(base); // 基于父级克隆
+                            Map<String, Object> variant = new LinkedHashMap<>(base);
 
                             // 变体 ID / SKU
                             String variantObjId = (v.get("id") != null ? String.valueOf(v.get("id")) : null);
                             String variantSku   = (v.get("sku") != null ? String.valueOf(v.get("sku")) : null);
                             if (variantSku != null && !variantSku.isBlank()) {
-                                variant.put("mpn", variantSku); // 无 GTIN 时，mpn 可满足条件必填
+                                variant.put("mpn", variantSku); // 无 GTIN 时，用 mpn 满足“id/gtin/mpn 之一”
                             }
 
-                            // 价格覆盖
+                            // 覆盖价格（若有）
                             @SuppressWarnings("unchecked")
                             Map<String, Object> priceData = (Map<String, Object>) v.get("priceData");
                             if (priceData != null) {
@@ -211,7 +210,7 @@ public class ProductFeedService {
                                 }
                             }
 
-                            // 库存覆盖
+                            // 覆盖库存（若有）
                             @SuppressWarnings("unchecked")
                             Map<String, Object> inv = (Map<String, Object>) v.get("inventory");
                             if (inv != null) {
@@ -223,10 +222,10 @@ public class ProductFeedService {
                                 }
                             }
 
-                            // 区分属性：size / color（中文“尺寸/颜色/尺码/顏色”会被归一化为 size/color）
+                            // 区分属性（size / color / 其他）
                             if (!pairs.isEmpty()) {
                                 for (Map.Entry<String, String> e : pairs.entrySet()) {
-                                    String k = e.getKey(); // 标准键名（size/color/…）
+                                    String k = e.getKey();
                                     String vs = e.getValue();
                                     if ("size".equals(k)) {
                                         variant.put("size", vs);
@@ -241,7 +240,7 @@ public class ProductFeedService {
                                 }
                             }
 
-                            // 分组与最终 ID
+                            // 分组与最终 ID/offer_id
                             variant.put("item_group_id", groupId);
                             variant.put("item_group_title", baseTitleStr);
                             String idPart = (variantSku != null && !variantSku.isBlank())
@@ -249,7 +248,6 @@ public class ProductFeedService {
                                     : (variantObjId != null ? variantObjId : ("v-" + UUID.randomUUID()));
                             variant.put("id", safeId(parentId + "-" + idPart));
 
-                            // offer_id：建议提供（id + price + currency）
                             @SuppressWarnings("unchecked")
                             Map<String, Object> pr = (Map<String, Object>) variant.get("price");
                             String offerId = variant.get("id") + "-" +
@@ -260,19 +258,19 @@ public class ProductFeedService {
                             mapped.add(variant);
                         }
 
-                        // 既然已经写出变体行，就不要再输出父商品行
+                        wroteVariant = true;
+                        // 关键：一旦写出变体，不再输出父级行
                         continue;
                     }
                 }
 
-                // ---------- 没有真实变体：可保留“按 Size 兜底展开”，或按单品输出 ----------
-                List<String> sizeChoices = extractSizeChoices(p); // 兜底（仅当 manageVariants=false 或无真实变体时）
-                if (sizeChoices != null && !sizeChoices.isEmpty()) {
+                // ---------- 若没有真实变体：尝试“按 Size 兜底展开”；成功就不再输出父级 ----------
+                List<String> sizeChoices = extractSizeChoices(p);
+                if (!wroteVariant && sizeChoices != null && !sizeChoices.isEmpty()) {
                     String groupId = safeId(p.getId());
                     for (String size : sizeChoices) {
                         Map<String, Object> variant = new LinkedHashMap<>(base);
                         String variantId = safeId(parentId + "-sz-" + slug(size));
-
                         variant.put("id", variantId);
                         variant.put("item_group_id", groupId);
                         variant.put("item_group_title", baseTitleStr);
@@ -285,8 +283,12 @@ public class ProductFeedService {
 
                         mapped.add(variant);
                     }
-                } else {
-                    // 作为单品输出
+                    wroteVariant = true;
+                    continue; // 兜底展开后也不再输出父级行
+                }
+
+                // ---------- 到这里仍未写出任何变体 ⇒ 输出父级单品 ----------
+                if (!wroteVariant) {
                     Map<String, Object> single = new LinkedHashMap<>(base);
                     single.put("id", safeId(parentId));
                     String offerId = single.get("id") + "-" +
