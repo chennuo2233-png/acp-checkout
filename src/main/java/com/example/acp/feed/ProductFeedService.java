@@ -150,6 +150,7 @@ public class ProductFeedService {
                 if (nonEmpty(TOS_URL))     base.put("seller_tos", ensureHttps(TOS_URL));
 
                 // ===== Variants：仅在 manageVariants=true 且存在选项时才尝试展开 =====
+                boolean wroteVariant = false;
                 boolean hasOptions = (p.getProductOptions() != null && !p.getProductOptions().isEmpty());
                 if (p.isManageVariants() && hasOptions) {
                     // 拉取真实变体
