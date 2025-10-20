@@ -219,7 +219,6 @@ public class ProductFeedService {
                                     sale.put("amount", vSale);
                                     sale.put("currency", vCurr);
                                     variant.put("sale_price", sale);
-    
                                 }
                             }
 
