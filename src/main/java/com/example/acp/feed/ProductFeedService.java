@@ -177,6 +177,8 @@ public class ProductFeedService {
                             Map<String, Object> v = realVariants.get(i);
                             Map<String, String> pairs = allChoicePairs.get(i);
                             String sig = buildChoiceSignature(pairs);
+
+                            if (sig.isEmpty()) continue;  // 跳过没有区分属性的“伪变体”
                             if (!seenSig.add(sig)) continue; // 去重：同签名只保留一条
 
                             Map<String, Object> variant = new LinkedHashMap<>(base);
