@@ -25,12 +25,13 @@ public class WixClient {
 
     /**
      * 拉取商品列表（v1 products/query）
+     * 说明：保持 v1，这里已能满足列表场景。
      */
     public List<WixProduct> fetchProducts() {
         String url = API_BASE + "/stores/v1/products/query";
 
         HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.AUTHORIZATION, apiKey);  
+        headers.set(HttpHeaders.AUTHORIZATION, apiKey);   // Wix 要求直接放 API Key
         headers.set("wix-site-id", siteId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
@@ -44,10 +45,8 @@ public class WixClient {
             ResponseEntity<ProductsResponse> resp =
                     restTemplate.exchange(url, HttpMethod.POST, entity, ProductsResponse.class);
 
-            System.out.println(">>> Wix API Status: " + resp.getStatusCode());
+            System.out.println(">>> Wix API Status (products): " + resp.getStatusCode());
             ProductsResponse responseBody = resp.getBody();
-            System.out.println(">>> Wix API Body: " + responseBody);
-
             if (resp.getStatusCode() == HttpStatus.OK
                     && responseBody != null
                     && responseBody.getProducts() != null) {
@@ -58,36 +57,39 @@ public class WixClient {
                 return Collections.emptyList();
             }
         } catch (Exception e) {
-            System.out.println(">>> Wix API request failed: " + e.getMessage());
+            System.out.println(">>> Wix API request failed (products): " + e.getMessage());
             return Collections.emptyList();
         }
     }
 
     /**
-     * 按产品 ID 查询真实变体（stores-reader v1 variants/query）。
-     * 返回的每个变体 Map 常见字段：
-     *  id, sku,
-     *  priceData: { price, currency, discountedPrice },
-     *  inventory: { inStock, quantity },
-     *  choices:   { size, color, ... }
+     * 按产品 ID 查询真实变体（V3：/stores/v3/products/query-variants）
+     * 关键改动：
+     *  - 请求体：必须使用 { "query": { "filter": {...}, "paging": {...} } } 结构
+     *  - 过滤字段：productData.productId（见 Catalog V3 Read-Only Variants 的过滤支持）
+     *  - 返回列表键：items（V3）；保持对旧版 variants 的兼容兜底
      */
+    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> fetchVariantsByProductId(String productId) {
         String url = API_BASE + "/stores/v3/products/query-variants";
 
         HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.AUTHORIZATION, apiKey);  // 与 fetchProducts 保持一致（不是 Bearer 就不要改）
+        headers.set(HttpHeaders.AUTHORIZATION, apiKey);
         headers.set("wix-site-id", siteId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
 
-        Map<String, Object> body = new HashMap<>();
+        // --- V3 请求体：放在 "query" 包裹里 ---
         Map<String, Object> filter = new HashMap<>();
-        filter.put("productId", productId);
-        body.put("filter", filter);
-
+        filter.put("productData.productId", productId);          // ✅ V3 过滤字段（支持 $eq 等）
         Map<String, Object> paging = new HashMap<>();
-        paging.put("limit", 100);
-        body.put("paging", paging);
+        paging.put("limit", 1000);                               // 尽量一页拿全
+        Map<String, Object> query = new HashMap<>();
+        query.put("filter", filter);
+        query.put("paging", paging);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("query", query);
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
@@ -100,16 +102,20 @@ public class WixClient {
                 return Collections.emptyList();
             }
 
-            Object variantsObj = resp.getBody().get("variants");
-            if (variantsObj instanceof List) {
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> variants = (List<Map<String, Object>>) variantsObj;
-                System.out.println("[WixClient] variants size for product " + productId + " = " + variants.size());
-                return variants;
+            Map<String, Object> m = resp.getBody();
+            Object items = m.get("items");                        // ✅ V3 返回键
+            List<Map<String, Object>> variants;
+            if (items instanceof List) {
+                variants = (List<Map<String, Object>>) items;
+            } else if (m.get("variants") instanceof List) {       // 兼容旧版
+                variants = (List<Map<String, Object>>) m.get("variants");
             } else {
-                System.out.println("[WixClient] variants field missing or not a list");
+                System.out.println("[WixClient] No variants list found. Keys: " + m.keySet());
                 return Collections.emptyList();
             }
+
+            System.out.println("[WixClient] variants size for product " + productId + " = " + variants.size());
+            return variants;
         } catch (Exception e) {
             System.out.println("[WixClient] fetchVariantsByProductId error: " + e.getMessage());
             return Collections.emptyList();
