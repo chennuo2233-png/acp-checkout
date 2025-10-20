@@ -24,13 +24,13 @@ public class WixClient {
     private final RestTemplate restTemplate = new RestTemplate();
 
     /**
-     * 拉取商品列表（v1 products/query），10.20已经升级到V3
+     * 拉取商品列表（v1 products/query）
      */
     public List<WixProduct> fetchProducts() {
-        String url = API_BASE + "/stores-reader/v1/variants/query";
+        String url = API_BASE + "/stores/v1/products/query";
 
         HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.AUTHORIZATION, apiKey);  // 与你现有写法保持一致
+        headers.set(HttpHeaders.AUTHORIZATION, apiKey);  
         headers.set("wix-site-id", siteId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
@@ -72,7 +72,7 @@ public class WixClient {
      *  choices:   { size, color, ... }
      */
     public List<Map<String, Object>> fetchVariantsByProductId(String productId) {
-        String url = API_BASE + "/stores-reader/v1/variants/query";
+        String url = API_BASE + "/stores/v3/products/query-variants";
 
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.AUTHORIZATION, apiKey);  // 与 fetchProducts 保持一致（不是 Bearer 就不要改）
