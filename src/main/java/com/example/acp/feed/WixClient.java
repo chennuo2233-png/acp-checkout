@@ -5,6 +5,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.http.HttpHeaders;
 import java.util.*;
 
 @Component
@@ -22,8 +23,8 @@ public class WixClient {
     /** 产品列表：保持 v1 */
     public List<WixProduct> fetchProducts() {
         String url = API_BASE + "/stores/v1/products/query";
-        HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.AUTHORIZATION, apiKey);
+        final org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, apiKey);
         headers.set("wix-site-id", siteId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
@@ -49,10 +50,10 @@ public class WixClient {
     /** 变体查询：回到 stores-reader v1，并按 productId 过滤 */
     @SuppressWarnings("unchecked")
     public List<Map<String, Object>> fetchVariantsByProductId(String productId) {
-        String url = API_BASE + "/stores-reader/v1/variants/query";
+        String url = API_BASE + "/stores-reader/v1/products/" + productId + "/variants/query";
 
-        HttpHeaders headers = new HttpHeaders();
-        headers.set(HttpHeaders.AUTHORIZATION, apiKey);
+        final org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
+        headers.set(org.springframework.http.HttpHeaders.AUTHORIZATION, apiKey);
         headers.set("wix-site-id", siteId);
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
@@ -63,10 +64,9 @@ public class WixClient {
         Map<String, Object> paging = new HashMap<>();
         paging.put("limit", 1000);
         Map<String, Object> query = new HashMap<>();
-        query.put("filter", filter);
         query.put("paging", paging);
         Map<String, Object> body = new HashMap<>();
-        body.put("query", query);
+        body.put("query", query);   
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
