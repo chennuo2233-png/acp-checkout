@@ -27,7 +27,7 @@ public class WixClient {
      * 拉取商品列表（v1 products/query），10.20已经升级到V3
      */
     public List<WixProduct> fetchProducts() {
-        String url = API_BASE + "/stores/v3/products/query-variants";
+        String url = API_BASE + "/stores-reader/v1/variants/query";
 
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.AUTHORIZATION, apiKey);  // 与你现有写法保持一致
