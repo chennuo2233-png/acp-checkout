@@ -24,10 +24,10 @@ public class WixClient {
     private final RestTemplate restTemplate = new RestTemplate();
 
     /**
-     * 拉取商品列表（v1 products/query）
+     * 拉取商品列表（v1 products/query），10.20已经升级到V3
      */
     public List<WixProduct> fetchProducts() {
-        String url = API_BASE + "/stores/v1/products/query";
+        String url = API_BASE + "/stores/v3/products/query-variants";
 
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.AUTHORIZATION, apiKey);  // 与你现有写法保持一致

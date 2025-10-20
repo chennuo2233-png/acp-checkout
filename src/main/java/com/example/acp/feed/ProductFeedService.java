@@ -191,36 +191,64 @@ public class ProductFeedService {
                             }
 
                             // 覆盖价格（若有）
+                            // ---- 变体价格（先 V3，再 V1 兼容）----
+@SuppressWarnings("unchecked")
+Map<String, Object> v3Price = (Map<String, Object>) v.get("price");
+boolean wroteVariantPrice = false;
+if (v3Price != null) {
+    Map<String, Object> actual = (Map<String, Object>) v3Price.get("actualPrice");
+    if (actual != null) {
+        Double vPrice = asDouble(actual.get("amount"));
+        // currency 可能在 actual 或 price 上；都没有就沿用父级
+        String vCurr = actual.get("currency") != null
+                ? String.valueOf(actual.get("currency"))
+                : (v3Price.get("currency") != null ? String.valueOf(v3Price.get("currency")) : null);
+        if (vPrice != null && vCurr != null) {
+            Map<String, Object> variantPrice = new LinkedHashMap<>();
+            variantPrice.put("amount", vPrice);
+            variantPrice.put("currency", vCurr);
+            variant.put("price", variantPrice);
+            wroteVariantPrice = true;
+        }
+
+        // 可选：如果有对比价，作为 sale_price
+        Map<String, Object> compare = (Map<String, Object>) v3Price.get("compareAtPrice");
+        if (compare != null && compare.get("amount") instanceof Number && vPrice != null) {
+            Double cmp = asDouble(compare.get("amount"));
+            if (cmp != null && cmp < vPrice && vCurr != null) {
+                Map<String, Object> sale = new LinkedHashMap<>();
+                sale.put("amount", cmp);
+                sale.put("currency", vCurr);
+                variant.put("sale_price", sale);
+            }
+        }
+    }
+}
+
+if (!wroteVariantPrice) {
+    // 兼容旧站（V1）的字段
+    Map<String, Object> priceData = (Map<String, Object>) v.get("priceData");
+    if (priceData == null) priceData = (Map<String, Object>) v.get("convertedPriceData");
+    if (priceData != null) {
+        Double vPrice = asDouble(priceData.get("price"));
+        String vCurr  = priceData.get("currency") != null ? String.valueOf(priceData.get("currency")) : null;
+        if (vPrice != null && vCurr != null) {
+            Map<String, Object> variantPrice = new LinkedHashMap<>();
+            variantPrice.put("amount", vPrice);
+            variantPrice.put("currency", vCurr);
+            variant.put("price", variantPrice);
+        }
+        Double vSale = asDouble(priceData.get("discountedPrice"));
+        if (vSale != null && vSale < (vPrice != null ? vPrice : Double.MAX_VALUE) && vCurr != null) {
+            Map<String, Object> sale = new LinkedHashMap<>();
+            sale.put("amount", vSale);
+            sale.put("currency", vCurr);
+            variant.put("sale_price", sale);
+        }
+    }
+}
+
                             
-                            // 1) 先尝试从 priceData 取
-                            Double vPrice = num(v, "priceData", "price");
-                            String vCurr  = str(v, "priceData", "currency");
-                            Double vSale  = num(v, "priceData", "discountedPrice");
-                            
-                            // 2) 取不到就看 convertedPriceData
-                            if (vPrice == null) { vPrice = num(v, "convertedPriceData", "price"); }
-                            if (vCurr  == null) { vCurr  = str(v, "convertedPriceData", "currency"); }
-                            if (vSale  == null) { vSale  = num(v, "convertedPriceData", "discountedPrice"); }
-                            
-                            // 3) 还没有就看 price（有些返回用这个键）
-                            if (vPrice == null) { vPrice = num(v, "price", "price"); }
-                            if (vCurr  == null) { vCurr  = str(v, "price", "currency"); }
-                            if (vSale  == null) { vSale  = num(v, "price", "discountedPrice"); }
-                            
-                            // 4) 成功拿到则覆盖父级 price
-                            if (vPrice != null && vCurr != null) {
-                                Map<String, Object> variantPrice = new LinkedHashMap<>();
-                                variantPrice.put("amount", vPrice);
-                                variantPrice.put("currency", vCurr);
-                                variant.put("price", variantPrice);
-                                
-                                if (vSale != null && vSale < vPrice) {
-                                    Map<String, Object> sale = new LinkedHashMap<>();
-                                    sale.put("amount", vSale);
-                                    sale.put("currency", vCurr);
-                                    variant.put("sale_price", sale);
-                                }
-                            }
 
                             // 覆盖库存（若有）
                             @SuppressWarnings("unchecked")
