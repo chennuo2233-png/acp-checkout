@@ -5,6 +5,7 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.PaymentIntentCreateParams;
+import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -22,14 +23,15 @@ import java.util.Map;
  *   STRIPE_API_KEY=sk_live_...       // 或 STRIPE_SECRET_KEY
  *   STRIPE_CONNECT_ACCOUNT=acct_xxx  // 可选：Connect 被连商户账号
  */
-public class PaymentService {
+@Service                                    
+ public class PaymentService {
 
     private final boolean stripeEnabled;
     private final String stripeApiKey;
     private final String defaultStripeConnectAccount; // 可选
 
     public PaymentService() {
-        // 修正：提供重载，最后一个参数是 boolean，不再走 varargs 的 String...
+        
         this.stripeEnabled = getEnvFlag("STRIPE_ENABLED", "stripe.enabled", false);
 
         this.stripeApiKey = firstNonBlank(
