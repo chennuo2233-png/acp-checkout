@@ -10,6 +10,7 @@ com\example\acp\feed\WixClient.class
 com\example\acp\store\IdempotencyStore$Entry.class
 com\example\acp\feed\WixProduct$MediaInfo$MediaItem.class
 com\example\acp\store\IdempotencyStore.class
+com\example\acp\web\ResponseHeaderEchoFilter.class
 com\example\acp\feed\ProductFeedController.class
 com\example\acp\CheckoutController.class
 com\example\acp\store\SessionStore.class
