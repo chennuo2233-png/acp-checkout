@@ -119,6 +119,7 @@ public class CheckoutController {
         }
         String currency = String.valueOf(session.getOrDefault("currency", "usd")).toLowerCase();
 
+
         
         // 支付令牌（兼容 payment / payment_data / 顶层三种写法）
         String token = "";
@@ -137,21 +138,79 @@ public class CheckoutController {
         Map<String, Object> responseBody;
         try {
             // 从请求头拿幂等键（方法签名已有 idemKey）
-String connectAccountId = System.getenv("STRIPE_CONNECT_ACCOUNT"); // 或者从你自定义的头里读取
-Map<String, String> metadata = Map.of("checkout_session_id", id, "source", "openai-agentic-checkout");
-
-Map<String, Object> payResult = paymentService.charge(
+            String connectAccountId = System.getenv("STRIPE_CONNECT_ACCOUNT"); // 或者从你自定义的头里读取
+            Map<String, String> metadata = Map.of("checkout_session_id", id, "source", "openai-agentic-checkout");
+            
+            Map<String, Object> payResult = paymentService.charge(
     token,
     payable,
     currency,
     idemKey,            // 透传给 Stripe 的 idempotency key
     connectAccountId,   // 多商户场景可切换到被连商户
-    metadata
-);
+    metadata);
 
             session.putAll(payResult); // 写入 status / payment_intent_id
 
             if ("succeeded".equals(payResult.get("status"))) {
+                // ---------- buyer 兜底：从 fulfillment_address.name 拆 first_name，且不覆盖已存在值 ----------
+@SuppressWarnings("unchecked")
+Map<String, Object> buyer = null;
+
+// 1) 先看 session 是否已有 buyer（例如此前已保存）
+if (session.get("buyer") instanceof Map) {
+    buyer = (Map<String, Object>) session.get("buyer");
+}
+
+// 2) 没有的话，看看这次 complete 的请求体里是否带了 buyer
+if (buyer == null && req.get("buyer") instanceof Map) {
+    buyer = new HashMap<>((Map<String, Object>) req.get("buyer")); // 拷贝一份，避免直接引用 req
+}
+
+// 3) 如果仍然没有，就新建一个容器（只在确有字段可填时才落盘）
+if (buyer == null) {
+    buyer = new HashMap<>();
+}
+
+// 4) 若缺少 first_name，就尝试从 fulfillment_address.name 拆
+Object firstNameObj = buyer.get("first_name");
+if (firstNameObj == null || String.valueOf(firstNameObj).isBlank()) {
+    Map<String, Object> fa = null;
+    if (session.get("fulfillment_address") instanceof Map) {
+        fa = (Map<String, Object>) session.get("fulfillment_address");
+    } else if (req.get("fulfillment_address") instanceof Map) {
+        fa = (Map<String, Object>) req.get("fulfillment_address");
+    }
+    if (fa != null) {
+        Object nameObj = fa.get("name");
+        if (nameObj instanceof String name && !name.isBlank()) {
+            String first = name.trim().split("\\s+")[0]; // 仅取第一个词作为 first_name
+            if (!first.isBlank()) {
+                buyer.put("first_name", first);
+            }
+        }
+    }
+}
+
+// 5) 若缺少 email，尽量从请求里拾取（不伪造）
+if (!buyer.containsKey("email")) {
+    // 优先从请求体 buyer.email 拿（如果本次带了）
+    if (req.get("buyer") instanceof Map<?,?> rb) {
+        Object e = ((Map<String, Object>) rb).get("email");
+        if (e instanceof String es && !es.isBlank()) {
+            buyer.put("email", es);
+        }
+    }
+    // 其次尝试顶层的 email（有些集成会放在根上）
+    if (!buyer.containsKey("email") && req.get("email") instanceof String es2 && !((String) es2).isBlank()) {
+        buyer.put("email", (String) es2);
+    }
+}
+
+// 6) 如果 buyer 里至少有一个关键字段（first_name 或 email），就写回 session
+if (!buyer.isEmpty()) {
+    session.put("buyer", buyer);
+}
+
                 CheckoutBuilders.markCompleted(session, req);     // 生成 order + 状态
                 session.put("status", "completed");
                 store.put(id, session);
