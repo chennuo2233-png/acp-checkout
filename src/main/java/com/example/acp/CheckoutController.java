@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 
+
 import java.util.*;
 
 /**
@@ -118,19 +119,36 @@ public class CheckoutController {
         }
         String currency = String.valueOf(session.getOrDefault("currency", "usd")).toLowerCase();
 
-        // 支付令牌（兼容 {payment:{payment_method_token}} 与 扁平传参）
-        String token;
+        
+        // 支付令牌（兼容 payment / payment_data / 顶层三种写法）
+        String token = "";
         if (req.containsKey("payment") && req.get("payment") instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> p = (Map<String, Object>) req.get("payment");
             token = String.valueOf(p.getOrDefault("payment_method_token", ""));
+        } else if (req.containsKey("payment_data") && req.get("payment_data") instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pd = (Map<String, Object>) req.get("payment_data");
+            token = String.valueOf(pd.getOrDefault("payment_method_token", ""));
         } else {
             token = String.valueOf(req.getOrDefault("payment_method_token", ""));
         }
 
         Map<String, Object> responseBody;
         try {
-            Map<String, Object> payResult = paymentService.charge(token, payable, currency);
+            // 从请求头拿幂等键（方法签名已有 idemKey）
+String connectAccountId = System.getenv("STRIPE_CONNECT_ACCOUNT"); // 或者从你自定义的头里读取
+Map<String, String> metadata = Map.of("checkout_session_id", id, "source", "openai-agentic-checkout");
+
+Map<String, Object> payResult = paymentService.charge(
+    token,
+    payable,
+    currency,
+    idemKey,            // 透传给 Stripe 的 idempotency key
+    connectAccountId,   // 多商户场景可切换到被连商户
+    metadata
+);
+
             session.putAll(payResult); // 写入 status / payment_intent_id
 
             if ("succeeded".equals(payResult.get("status"))) {
@@ -142,11 +160,25 @@ public class CheckoutController {
                 orderEventPublisher.publishOrderCreated(session);
                 responseBody = session;
             } else {
-                session.put("status", "payment_failed");
-                session.put("failure_message", String.valueOf(payResult.getOrDefault("failure_message", "payment_failed")));
+                // 不改变会话状态（通常仍为 ready_for_payment）
+                String failure = String.valueOf(
+                    payResult.getOrDefault("failure_message", "Payment failed")
+                    );
+                // 将错误写入 messages，便于 ChatGPT 向用户展示
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> msgs = (List<Map<String, Object>>) session.get("messages");
+                if (msgs == null) {
+                    msgs = new ArrayList<>();
+                    session.put("messages", msgs);
+                }
+                Map<String, Object> m = new HashMap<>();
+                m.put("type", "payment_error");
+                m.put("text", failure);
+                msgs.add(m);
                 store.put(id, session);
                 responseBody = session;
             }
+
         } catch (Exception e) {
             e.printStackTrace();
             responseBody = Map.of("error", e.getMessage());
