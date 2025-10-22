@@ -5,6 +5,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.time.Instant; 
 import java.time.temporal.ChronoUnit;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+
 
 /**
  * 构造与更新 Checkout Session 的静态工具。
@@ -83,32 +87,87 @@ public class CheckoutBuilders {
         session.put("line_items", lineItems);
 
         // ── Fulfillment options（示例：不对运费计税） ───────────────────────
-        List<Map<String, Object>> fulfillmentOptions = new ArrayList<>();
-        if (hasAddress) {
-            Map<String, Object> standard = new HashMap<>();
-            standard.put("type", "shipping");
-            standard.put("id", "fulfillment_option_standard");
-            standard.put("title", "Standard");
-            standard.put("subtitle", "Arrives in 4-5 days");
-            standard.put("carrier", "USPS");
-            
-            Instant now = Instant.now();
-            standard.put("earliest_delivery_time", now.plus(4, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
-            standard.put("latest_delivery_time",   now.plus(5, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
-            standard.put("subtotal", SHIP_STANDARD_CENTS);
-            standard.put("tax", 0);
-            standard.put("total", SHIP_STANDARD_CENTS);
-            fulfillmentOptions.add(standard);
+        // ── Fulfillment options（从环境变量 SHIPPING_LINES 动态生成；读不到时回退 Standard） ──
+List<Map<String, Object>> fulfillmentOptions = new ArrayList<>();
+if (hasAddress) {
+    String shippingJson = System.getenv("SHIPPING_LINES");
+    Instant now = Instant.now();
 
-            session.put("fulfillment_options", fulfillmentOptions);
-            session.put("fulfillment_option_id", "fulfillment_option_standard");
-        } else {
-            session.put("fulfillment_options", fulfillmentOptions);
+    if (shippingJson != null && !shippingJson.isBlank()) {
+        try {
+            ArrayNode arr = (ArrayNode) MAPPER.readTree(shippingJson);
+            for (JsonNode n : arr) {
+                Map<String, Object> opt = new HashMap<>();
+                opt.put("type", "shipping");
+                String id = n.path("id").asText();
+                opt.put("id", id == null || id.isBlank() ? "fo_" + UUID.randomUUID() : id);
+                opt.put("title", n.path("title").asText("Standard"));
+                opt.put("subtitle", n.path("subtitle").asText(""));
+                opt.put("carrier", n.path("carrier").asText(""));
+
+                int daysMin = n.path("days_min").asInt(4);
+                int daysMax = n.path("days_max").asInt(Math.max(daysMin, 5));
+                opt.put("earliest_delivery_time", now.plus(daysMin, ChronoUnit.DAYS)
+                        .truncatedTo(ChronoUnit.DAYS).toString());
+                opt.put("latest_delivery_time", now.plus(daysMax, ChronoUnit.DAYS)
+                        .truncatedTo(ChronoUnit.DAYS).toString());
+
+                int price = n.path("price_cents").asInt(SHIP_STANDARD_CENTS);
+                opt.put("subtotal", price);
+                opt.put("tax", 0);      // 示例：运费不计税（若你要计税，这里替换成计算值）
+                opt.put("total", price);
+                fulfillmentOptions.add(opt);
+            }
+        } catch (Exception ignore) {
+            fulfillmentOptions.clear(); // 解析失败则走回退
         }
+    }
+
+    if (fulfillmentOptions.isEmpty()) {
+        // 回退：保留你原来的 Standard 逻辑（确保兼容）
+        Map<String, Object> standard = new HashMap<>();
+        standard.put("type", "shipping");
+        standard.put("id", "fulfillment_option_standard");
+        standard.put("title", "Standard");
+        standard.put("subtitle", "Arrives in 4-5 days");
+        standard.put("carrier", "USPS");
+        standard.put("earliest_delivery_time", now.plus(4, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
+        standard.put("latest_delivery_time",   now.plus(5, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
+        standard.put("subtotal", SHIP_STANDARD_CENTS);
+        standard.put("tax", 0);
+        standard.put("total", SHIP_STANDARD_CENTS);
+        fulfillmentOptions.add(standard);
+    }
+
+    session.put("fulfillment_options", fulfillmentOptions);
+
+    // 若请求带 fulfillment_option_id 就尊重请求；否则选最便宜
+    String requestedId = req.get("fulfillment_option_id") != null ? String.valueOf(req.get("fulfillment_option_id")) : null;
+    String selectedId = pickSelectedFulfillmentId(fulfillmentOptions, requestedId);
+    session.put("fulfillment_option_id", selectedId);
+} else {
+    session.put("fulfillment_options", fulfillmentOptions);
+}
+
+
+
+
 
         // ── totals 计算 ────────────────────────────────────────────────────
         int taxTotal = hasAddress ? (int) Math.round(itemsBaseAmount * (TAX_RATE_BPS / 10000.0)) : 0;
-        int fulfillmentTotal = hasAddress ? SHIP_STANDARD_CENTS : 0;
+        int fulfillmentTotal = 0;
+if (hasAddress) {
+    String selectedId = (String) session.get("fulfillment_option_id");
+    if (selectedId != null) {
+        for (Map<String, Object> o : fulfillmentOptions) {
+            if (selectedId.equals(o.get("id"))) {
+                fulfillmentTotal = ((Number)o.getOrDefault("total", 0)).intValue();
+                break;
+            }
+        }
+    }
+}
+
         int subtotal = itemsBaseAmount;
         int total = subtotal + taxTotal + fulfillmentTotal;
 
@@ -210,7 +269,7 @@ public class CheckoutBuilders {
         order.put("created_time", completed);
 
     }  
-      private static String sellerBaseUrl() {
+    private static String sellerBaseUrl() {
             String base = System.getenv("SELLER_URL");
             if (base == null || base.isBlank()) {
                 base = "https://www.TestshoP.com";   // 兜底域名：可按需改成你的默认
@@ -224,5 +283,25 @@ public class CheckoutBuilders {
                     }
                     return base;
                 }
+    
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 从 options 中挑选选中的履约 ID：优先使用请求指定；否则选总价最低的 */
+    private static String pickSelectedFulfillmentId(List<Map<String, Object>> options, String requestedId) {
+        if (requestedId != null && !requestedId.isBlank()) {
+            for (Map<String, Object> o : options) {
+                if (requestedId.equals(o.get("id"))) return requestedId;
+            }
+        }
+    // 选最便宜
+    String bestId = null;
+    int best = Integer.MAX_VALUE;
+    for (Map<String, Object> o : options) {
+        int t = ((Number)o.getOrDefault("total", 0)).intValue();
+        if (t < best) { best = t; bestId = String.valueOf(o.get("id")); }
+    }
+    return bestId;
+}
+
     
 }
