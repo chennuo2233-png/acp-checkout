@@ -218,6 +218,7 @@ if (!buyer.isEmpty()) {
                 // 成功：发送 order.created
                 orderEventPublisher.publishOrderCreated(session);
                 responseBody = session;
+                session.put("updated_time", java.time.Instant.now().toString());
             } else {
                 // 不改变会话状态（通常仍为 ready_for_payment）
                 String failure = String.valueOf(

@@ -1,6 +1,10 @@
 package com.example.acp.service;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.time.Instant; 
+import java.time.temporal.ChronoUnit;
 
 /**
  * 构造与更新 Checkout Session 的静态工具。
@@ -30,6 +34,8 @@ public class CheckoutBuilders {
     public static Map<String, Object> buildInitialSession(String sessionId, Map<String, Object> req) {
         Map<String, Object> session = new HashMap<>();
         session.put("id", sessionId);
+        session.put("created_time", Instant.now().toString());
+        session.put("updated_time", session.get("created_time"));
 
         // 货币：优先取本次请求的 currency，其次默认 usd
         String currency = String.valueOf(req.getOrDefault("currency", "usd")).toLowerCase();
@@ -85,9 +91,10 @@ public class CheckoutBuilders {
             standard.put("title", "Standard");
             standard.put("subtitle", "Arrives in 4-5 days");
             standard.put("carrier", "USPS");
-            // 下面两个时间仅演示用途
-            standard.put("earliest_delivery_time", "2025-10-14T00:00:00Z");
-            standard.put("latest_delivery_time", "2025-10-16T00:00:00Z");
+            
+            Instant now = Instant.now();
+            standard.put("earliest_delivery_time", now.plus(4, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
+            standard.put("latest_delivery_time",   now.plus(5, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).toString());
             standard.put("subtotal", SHIP_STANDARD_CENTS);
             standard.put("tax", 0);
             standard.put("total", SHIP_STANDARD_CENTS);
@@ -185,6 +192,8 @@ public class CheckoutBuilders {
         Map<String, Object> rebuilt = buildInitialSession((String) session.get("id"), merged);
         session.clear();
         session.putAll(rebuilt);
+        session.put("created_time", String.valueOf(session.getOrDefault("created_time", Instant.now().toString())));
+        session.put("updated_time", Instant.now().toString());
     }
 
     /** 把会话状态置为 completed，并生成订单对象 */
@@ -194,7 +203,26 @@ public class CheckoutBuilders {
         order.put("id", "ord_" + UUID.randomUUID());
         order.put("checkout_session_id", session.get("id"));
         // 可替换为你的正式订单详情页
-        order.put("permalink_url", "https://www.testshop.com/orders/" + order.get("id"));
+        order.put("permalink_url", sellerBaseUrl() + "/orders/" + order.get("id"));
         session.put("order", order);
-    }
+        String completed = java.time.Instant.now().toString();
+        session.put("completed_time", completed);
+        order.put("created_time", completed);
+
+    }  
+      private static String sellerBaseUrl() {
+            String base = System.getenv("SELLER_URL");
+            if (base == null || base.isBlank()) {
+                base = "https://www.TestshoP.com";   // 兜底域名：可按需改成你的默认
+                }
+                base = base.trim();
+                if (!(base.startsWith("http://") || base.startsWith("https://"))) {
+                    base = "https://" + base;            // 没写协议就补 https
+                    }
+                    while (base.endsWith("/")) {             // 去掉末尾多余的斜杠
+                        base = base.substring(0, base.length() - 1);
+                    }
+                    return base;
+                }
+    
 }
