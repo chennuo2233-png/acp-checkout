@@ -174,6 +174,7 @@ if (buyer == null) {
 // 4) 若缺少 first_name，就尝试从 fulfillment_address.name 拆
 Object firstNameObj = buyer.get("first_name");
 if (firstNameObj == null || String.valueOf(firstNameObj).isBlank()) {
+
     Map<String, Object> fa = null;
     if (session.get("fulfillment_address") instanceof Map) {
         fa = (Map<String, Object>) session.get("fulfillment_address");
@@ -211,7 +212,8 @@ if (!buyer.isEmpty()) {
     session.put("buyer", buyer);
 }
 
-                CheckoutBuilders.markCompleted(session, req);     // 生成 order + 状态
+                
+            CheckoutBuilders.markCompleted(session, req);     // 生成 order + 状态
                 session.put("status", "completed");
                 store.put(id, session);
 
@@ -219,25 +221,30 @@ if (!buyer.isEmpty()) {
                 orderEventPublisher.publishOrderCreated(session);
                 responseBody = session;
                 session.put("updated_time", java.time.Instant.now().toString());
+            } else if ("processing".equals(payResult.get("status"))) {
+                // ✅ 处理中：不把订单置 completed，不写 payment_error
+                // 仅记录一个轻量状态，等待 webhook 的 payment_intent.succeeded / payment_failed
+                session.put("payment_status", "processing");
+                store.put(id, session);
+                responseBody = session;
             } else {
-                // 不改变会话状态（通常仍为 ready_for_payment）
+                // ❌ 只有明确失败时才写 messages
                 String failure = String.valueOf(
                     payResult.getOrDefault("failure_message", "Payment failed")
                     );
-                // 将错误写入 messages，便于 ChatGPT 向用户展示
-                @SuppressWarnings("unchecked")
-                List<Map<String, Object>> msgs = (List<Map<String, Object>>) session.get("messages");
-                if (msgs == null) {
-                    msgs = new ArrayList<>();
-                    session.put("messages", msgs);
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> msgs = (List<Map<String, Object>>) session.get("messages");
+                    if (msgs == null) {
+                        msgs = new ArrayList<>();
+                        session.put("messages", msgs);
+                    }
+                    Map<String, Object> m = new HashMap<>();
+                    m.put("type", "payment_error");
+                    m.put("text", failure);
+                    msgs.add(m);
+                    store.put(id, session);
+                    responseBody = session;
                 }
-                Map<String, Object> m = new HashMap<>();
-                m.put("type", "payment_error");
-                m.put("text", failure);
-                msgs.add(m);
-                store.put(id, session);
-                responseBody = session;
-            }
 
         } catch (Exception e) {
             e.printStackTrace();

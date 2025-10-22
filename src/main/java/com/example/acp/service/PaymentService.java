@@ -139,13 +139,13 @@ import java.util.Map;
 
             // 成功态：succeeded；如你要“先授权后捕获”，也接受 requires_capture
             String s = safe(pi.getStatus());
-            if ("succeeded".equalsIgnoreCase(s) || "requires_capture".equalsIgnoreCase(s)) {
-                Map<String, Object> ok = new HashMap<>();
-                ok.put("status", "succeeded");
-                ok.put("payment_intent_id", pi.getId());
-                ok.put("payment_intent_status", s);
-                return ok;
-            }
+            if ("succeeded".equalsIgnoreCase(s) || "requires_capture".equalsIgnoreCase(s) || "processing".equalsIgnoreCase(s)) {Map<String, Object> ok = new HashMap<>();
+            // 若 PI 仍处于 processing，向上游明确区分，避免过早完成订单
+            ok.put("status", "processing".equalsIgnoreCase(s) ? "processing" : "succeeded");
+            ok.put("payment_intent_id", pi.getId());
+            ok.put("payment_intent_status", s);
+            return ok;
+        }
 
             // 其它状态视为失败
             String failure = "Stripe PaymentIntent status=" + s;

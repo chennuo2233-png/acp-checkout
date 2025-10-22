@@ -67,6 +67,15 @@ public ResponseEntity<String> handle(@RequestBody String payload,
         }
 
         String type = event.getType();
+        // 先处理 SPT 被使用的事件（可能不带 PI）
+        if ("shared_payment.granted_token.used".equals(type)) {
+            System.out.println("[Stripe Webhook] shared_payment.granted_token.used");
+            // 这里通常没有足够信息去定位 session；仅记录/审计即可
+            // 如需更强关联，可在 PaymentIntent.metadata 里带更多上下文已在你的 PaymentService/Controller 中完成
+            idempotencyStore.commit("evt:" + event.getId(), Map.of("ok", true));
+            return ResponseEntity.ok("ok");
+        }
+
         String piOrObjId = extractPiOrObjId(event);
         System.out.println("[Stripe Webhook] type=" + type + " piOrObjId=" + piOrObjId);
 
@@ -94,7 +103,7 @@ public ResponseEntity<String> handle(@RequestBody String payload,
                     break;
 
                 default:
-                    // 其它类型本步先忽略（退款/争议下一步加）
+                    
             }
         }
 
