@@ -2,6 +2,7 @@ C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductsResponse
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\Application.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\feed\ProductFeedService.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\web\ResponseHeaderEchoFilter.java
+C:\Users\Lenovo\acp-checkout\src\main\java\com\example\web\RequestAuthFilter.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\CheckoutController.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\service\PaymentService.java
 C:\Users\Lenovo\acp-checkout\src\main\java\com\example\acp\store\SessionStore.java
