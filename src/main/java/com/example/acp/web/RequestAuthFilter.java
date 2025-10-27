@@ -70,9 +70,9 @@ public class RequestAuthFilter extends OncePerRequestFilter {
         int q = uri.indexOf('?');
         if (q >= 0) uri = uri.substring(0, q);
         
-        if ("/product_feed".equals(uri)
-        || "/webhook/stripe".equals(uri)
-        || uri.startsWith("/webhook/stripe/")) {
+        if ("/api/product_feed".equals(uri)
+        || "/api/webhook/stripe".equals(uri)
+        || uri.startsWith("/api/webhook/stripe/")) {
             chain.doFilter(request, response);
             return;
         }
