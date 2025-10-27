@@ -57,6 +57,27 @@ public class RequestAuthFilter extends OncePerRequestFilter {
             return;
         }
 
+        // ======= 新增：路径白名单放行（Stripe Webhook + Product Feed）======
+        // 说明：
+        //  - /webhook/stripe 与 /webhook/stripe/** ：给 Stripe 回调使用，采用 Stripe-Signature 验签，不走本过滤器的 Bearer/HMAC。
+        //  - /product_feed ：你选择“拉取模式”，OpenAI 拉取时不携带你自定义签名头，这里直接放行。
+        String uri = request.getRequestURI();
+        String ctx = request.getContextPath();
+        if (ctx != null && !ctx.isEmpty() && uri.startsWith(ctx)) {
+            uri = uri.substring(ctx.length());
+        }
+        // 去掉查询串，避免 /product_feed?x=1 的情况
+        int q = uri.indexOf('?');
+        if (q >= 0) uri = uri.substring(0, q);
+        
+        if ("/product_feed".equals(uri)
+        || "/webhook/stripe".equals(uri)
+        || uri.startsWith("/webhook/stripe/")) {
+            chain.doFilter(request, response);
+            return;
+        }
+        // =============================================================
+
         // 包一层可重复读取 body 的 wrapper（我们要先读原始字节验签，再让后续链路照常读）
         CachedBodyRequestWrapper wrapped = new CachedBodyRequestWrapper(request);
 
